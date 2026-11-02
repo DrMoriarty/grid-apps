@@ -7,54 +7,54 @@
 
 ## Format Capability Matrix
 
-| Format | Encode | Decode | Extensions | Versions | Profiles | RLE Type | Notes |
-|--------|:------:|:------:|------------|----------|----------|----------|-------|
-| **Chitubox Family** |
-| ChituboxFile | ✓ | ✓ | photon, cbddlp, ctb, gktwo.ctb | 1-5 (def: 5) | No | RLE125 / CTB variable RLE | Most common |
-| CTBEncryptedFile | ✓ | ✓ | ctb, encrypted.ctb | 4-5 (def: 5) | No | CTB variable RLE + AES | Encrypted |
-| PHZFile | ✓ | ✓ | phz | 2 | No | RLE125 | Chitubox PHZ |
-| ChituboxZipFile | ✓ | ✓ | zip | - | No | PNG | G-code based |
-| AnycubicPhotonSFile | ✓ | ✓ | photons | - | No | RLE128 | Legacy Photon S |
+| Format                                      | Encode | Decode | Extensions                                    | Versions     | Profiles    | RLE Type                  | Notes                                                                  |
+| ------------------------------------------- | :----: | :----: | --------------------------------------------- | ------------ | ----------- | ------------------------- | ---------------------------------------------------------------------- |
+| **Chitubox Family**                         |
+| ChituboxFile                                |   ✓    |   ✓    | photon, cbddlp, ctb, gktwo.ctb                | 1-5 (def: 5) | No          | RLE125 / CTB variable RLE | Most common                                                            |
+| CTBEncryptedFile                            |   ✓    |   ✓    | ctb, encrypted.ctb                            | 4-5 (def: 5) | No          | CTB variable RLE + AES    | Encrypted                                                              |
+| PHZFile                                     |   ✓    |   ✓    | phz                                           | 2            | No          | RLE125                    | Chitubox PHZ                                                           |
+| ChituboxZipFile                             |   ✓    |   ✓    | zip                                           | -            | No          | PNG                       | G-code based                                                           |
+| AnycubicPhotonSFile                         |   ✓    |   ✓    | photons                                       | -            | No          | RLE128                    | Legacy Photon S                                                        |
 | **Anycubic Family - Legacy (v1, v515-516)** |
-| AnycubicFile (PWS) | ✓ | ✓ | pws | 1 | Yes (22) | 1-byte bit-plane RLE125 | PhotonS |
-| AnycubicFile (PW0/PWX) | ✓ | ✓ | pw0, pwx | 1 | Yes (22) | Nibble RLE4 | PhotonZero, PhotonX |
-| **Anycubic Family - Modern (v515-518)** |
-| AnycubicFile (v515-v516) | ✓ | ✓ | dlp, pwmx, pwmo, pwms, pmsq, pwma, pm3, pm3m | varies | Yes (22) | Nibble RLE4 | Ultra, Mono, M3 family |
-| AnycubicFile (v515-v517) | ✓ | ✓ | dl2p, pwmb, pmx2, pm3r | varies | Yes (22) | Nibble RLE4 | D2, X2, M3 Plus/Premium |
-| AnycubicFile (v517) | ✓ | ✓ | pm3n, pm5, px6s | 517 | Yes (22) | Nibble RLE4 | Mono 2, X6Ks, M5 |
-| AnycubicFile (v518) | ✓ | ✓ | pm5s, m5sp | 518 | Yes (22) | Nibble RLE4 | Mono M5s/Pro |
-| AnycubicFile (unversioned fallback) | ✓ | ✓ | pm4n, pwc | 1, 515-518 | Yes (22) | Nibble RLE4 | Registered but not explicitly version-pinned |
-| AnycubicZipFile | ✓ | ✓ | pm4u, pm7, pm7m, pwsz, pp1, pp1m | - | No | PNG | ZIP with JSON |
-| **Creality Family** |
-| CrealityCXDLPv1File | ✓ | ✓ | v1.cxdlp | 1 | No | RLE | Legacy implementation present but not registered in `AvailableFormats` |
-| CrealityCXDLPFile | ✓ | ✓ | cxdlp | 2-3 (def: 3) | Yes | RLE | HALOT series |
-| CrealityCXDLPv4File | ✓ | ✓ | cxdlpv4 | 4 | Yes | RLE | Current |
-| **Other Binary Formats** |
-| AnetFile | ✓ | ✓ | n4, n7 | 3 | Yes (N4/N7) | RLE | Anet printers |
-| FDGFile | ✓ | ✓ | fdg | 2 | No | RLE | Voxelab |
-| GooFile | ✓ | ✓ | goo, prz | - | No | Chunked RLE + checksum | Elegoo/Phrozen |
-| LGSFile | ✓ | ✓ | lgs, lgs30, lgs120, lgs4k | - | Yes | Struct | Longer Orange |
-| MDLPFile | ✓ | ✓ | mdlp | 1 | No | Vector | Makerbase MKS |
-| GR1File | ✓ | ✓ | gr1 | - | No | Vector | GR Workshop |
-| OSFFile | ✓ | ✓ | osf | 4 (def) | No | Compressed | Vlare |
-| OSLAFile | ✓ | ✓ | osla | - | No | Varies | Open SLA |
-| **Archive Formats** |
-| SL1File | ✓ | ✓ | sl1, sl1s | - | Yes | PNG | Prusa (INI) |
-| UVJFile | ✓ | ✓ | uvj | - | No | PNG | Vendor-neutral |
-| VDAFile | ✓ | ✓ | zip | - | No | Images | Voxeldance Additive |
-| VDTFile | ✓ | ✓ | vdt | 1 | No | PNG | Voxeldance Tango |
-| NanoDLPFile | ✓ | ✓ | nanodlp, rgb.nanodlp | 1-2 | No | Images | NanoDLP |
-| KlipperFile | ✓ | ✓ | zip, rgb.zip | - | No | PNG | Klipper firmware |
-| ZCodeFile | ✓ | ✓ | zcode | - | No | Images | UnizMaker IBEE |
-| ZCodexFile | ✓ | ✓ | zcodex | - | Yes | Images | Zortrax |
-| CWSFile | ✓ | ✓ | cws, rgb.cws, xml.cws | - | No | PNG | NovaMaker/CW |
-| JXSFile | ✓ | ✓ | jxs | - | No | Images | Uniformation |
-| GenericZIPFile | ✓ | ✓ | zip | - | No | Varies | Fallback |
-| **Text/Vector Formats** |
-| FlashForgeSVGXFile | ✓ | ✓ | svgx | - | No | SVG | FlashForge |
-| QDTFile | ✓ | ✓ | qdt | - | No | Text | Emake3D Galaxy |
-| **Import Only** |
-| ImageFile | ✓ | ✓ | png, jpg, jpeg, jp2, tga, tif, tiff, bmp, pbm | - | No | N/A | Image import |
+| AnycubicFile (PWS)                          |   ✓    |   ✓    | pws                                           | 1            | Yes (22)    | 1-byte bit-plane RLE125   | PhotonS                                                                |
+| AnycubicFile (PW0/PWX)                      |   ✓    |   ✓    | pw0, pwx                                      | 1            | Yes (22)    | Nibble RLE4               | PhotonZero, PhotonX                                                    |
+| **Anycubic Family - Modern (v515-518)**     |
+| AnycubicFile (v515-v516)                    |   ✓    |   ✓    | dlp, pwmx, pwmo, pwms, pmsq, pwma, pm3, pm3m  | varies       | Yes (22)    | Nibble RLE4               | Ultra, Mono, M3 family                                                 |
+| AnycubicFile (v515-v517)                    |   ✓    |   ✓    | dl2p, pwmb, pmx2, pm3r                        | varies       | Yes (22)    | Nibble RLE4               | D2, X2, M3 Plus/Premium                                                |
+| AnycubicFile (v517)                         |   ✓    |   ✓    | pm3n, pm5, px6s                               | 517          | Yes (22)    | Nibble RLE4               | Mono 2, X6Ks, M5                                                       |
+| AnycubicFile (v518)                         |   ✓    |   ✓    | pm5s, m5sp                                    | 518          | Yes (22)    | Nibble RLE4               | Mono M5s/Pro                                                           |
+| AnycubicFile (unversioned fallback)         |   ✓    |   ✓    | pm4n, pwc                                     | 1, 515-518   | Yes (22)    | Nibble RLE4               | Registered but not explicitly version-pinned                           |
+| AnycubicZipFile                             |   ✓    |   ✓    | pm4u, pm7, pm7m, pwsz, pp1, pp1m              | -            | No          | PNG                       | ZIP with JSON                                                          |
+| **Creality Family**                         |
+| CrealityCXDLPv1File                         |   ✓    |   ✓    | v1.cxdlp                                      | 1            | No          | RLE                       | Legacy implementation present but not registered in `AvailableFormats` |
+| CrealityCXDLPFile                           |   ✓    |   ✓    | cxdlp                                         | 2-3 (def: 3) | Yes         | RLE                       | HALOT series                                                           |
+| CrealityCXDLPv4File                         |   ✓    |   ✓    | cxdlpv4                                       | 4            | Yes         | RLE                       | Current                                                                |
+| **Other Binary Formats**                    |
+| AnetFile                                    |   ✓    |   ✓    | n4, n7                                        | 3            | Yes (N4/N7) | RLE                       | Anet printers                                                          |
+| FDGFile                                     |   ✓    |   ✓    | fdg                                           | 2            | No          | RLE                       | Voxelab                                                                |
+| GooFile                                     |   ✓    |   ✓    | goo, prz                                      | -            | No          | Chunked RLE + checksum    | Elegoo/Phrozen                                                         |
+| LGSFile                                     |   ✓    |   ✓    | lgs, lgs30, lgs120, lgs4k                     | -            | Yes         | Struct                    | Longer Orange                                                          |
+| MDLPFile                                    |   ✓    |   ✓    | mdlp                                          | 1            | No          | Vector                    | Makerbase MKS                                                          |
+| GR1File                                     |   ✓    |   ✓    | gr1                                           | -            | No          | Vector                    | GR Workshop                                                            |
+| OSFFile                                     |   ✓    |   ✓    | osf                                           | 4 (def)      | No          | Compressed                | Vlare                                                                  |
+| OSLAFile                                    |   ✓    |   ✓    | osla                                          | -            | No          | Varies                    | Open SLA                                                               |
+| **Archive Formats**                         |
+| SL1File                                     |   ✓    |   ✓    | sl1, sl1s                                     | -            | Yes         | PNG                       | Prusa (INI)                                                            |
+| UVJFile                                     |   ✓    |   ✓    | uvj                                           | -            | No          | PNG                       | Vendor-neutral                                                         |
+| VDAFile                                     |   ✓    |   ✓    | zip                                           | -            | No          | Images                    | Voxeldance Additive                                                    |
+| VDTFile                                     |   ✓    |   ✓    | vdt                                           | 1            | No          | PNG                       | Voxeldance Tango                                                       |
+| NanoDLPFile                                 |   ✓    |   ✓    | nanodlp, rgb.nanodlp                          | 1-2          | No          | Images                    | NanoDLP                                                                |
+| KlipperFile                                 |   ✓    |   ✓    | zip, rgb.zip                                  | -            | No          | PNG                       | Klipper firmware                                                       |
+| ZCodeFile                                   |   ✓    |   ✓    | zcode                                         | -            | No          | Images                    | UnizMaker IBEE                                                         |
+| ZCodexFile                                  |   ✓    |   ✓    | zcodex                                        | -            | Yes         | Images                    | Zortrax                                                                |
+| CWSFile                                     |   ✓    |   ✓    | cws, rgb.cws, xml.cws                         | -            | No          | PNG                       | NovaMaker/CW                                                           |
+| JXSFile                                     |   ✓    |   ✓    | jxs                                           | -            | No          | Images                    | Uniformation                                                           |
+| GenericZIPFile                              |   ✓    |   ✓    | zip                                           | -            | No          | Varies                    | Fallback                                                               |
+| **Text/Vector Formats**                     |
+| FlashForgeSVGXFile                          |   ✓    |   ✓    | svgx                                          | -            | No          | SVG                       | FlashForge                                                             |
+| QDTFile                                     |   ✓    |   ✓    | qdt                                           | -            | No          | Text                      | Emake3D Galaxy                                                         |
+| **Import Only**                             |
+| ImageFile                                   |   ✓    |   ✓    | png, jpg, jpeg, jp2, tga, tif, tiff, bmp, pbm | -            | No          | N/A                       | Image import                                                           |
 
 **Total Extensions:** 60+
 **Total Printer Profiles:** 7 formats with profiles (30+ printer models)
@@ -73,6 +73,7 @@
 **RLE:** RLE125 (limit: 125 pixels)
 
 **Header Structure (CORRECTED - 32-bit floats):**
+
 ```
 Offset | Size | Type   | Field                    | Notes
 -------|------|--------|--------------------------|------------------
@@ -103,6 +104,7 @@ Offset | Size | Type   | Field                    | Notes
 0x60   | 2    | uint16 | LightPWM                 | 0-255 (v2+)
 0x62   | 2    | uint16 | BottomLightPWM           | 0-255 (v2+)
 ```
+
 **Header Size:** 0x64 (100 bytes) for v2
 
 #### 1.2 CTB (Chitubox v3)
@@ -113,6 +115,7 @@ Offset | Size | Type   | Field                    | Notes
 **RLE:** CTB variable-length 7-bit grayscale RLE, optionally XOR-encrypted with a per-layer seed-derived stream
 
 **Header Structure (CORRECTED - matches Chitubox 1.8 fixtures):**
+
 ```
 Offset | Size | Type   | Field                    | Notes
 -------|------|--------|--------------------------|------------------
@@ -146,6 +149,7 @@ Offset | Size | Type   | Field                    | Notes
 0x68   | 4    | uint32 | SlicerOffsetAddress      |
 0x6C   | 4    | uint32 | SlicerDataSize           | bytes
 ```
+
 **Header Size:** 0x70 (112 bytes)
 
 **CRITICAL NOTE:** Previous documentation incorrectly showed 8-byte (double) floats. CTB v3 uses 32-bit floats throughout. This matches Chitubox 1.8 fixtures and actual UVtools implementation.
@@ -171,6 +175,7 @@ Run length bytes:
 If the header encryption seed at `0x64` is non-zero, layer RLE bytes are XORed with a per-layer key stream derived from that seed. The seed is not the direct XOR key.
 
 **CTB Run Examples:**
+
 ```
 Input: 1 white pixel (255)
 Encoded: 7F
@@ -186,6 +191,7 @@ Encoded: E4 C0 4E 20
 ```
 
 **CTB Layer XOR Key Schedule:**
+
 ```c
 init = seed * 0x2D83CDAC + 0xD8A83423
 key = (layerIndex * 0x1E1530CD + 0xEC3D47CD) * init
@@ -205,6 +211,7 @@ CTB grayscale anti-aliasing stores 128 levels: `0x00` is masked, `0x7F` expands 
 **RLE:** CTB variable-length 7-bit grayscale RLE
 
 Same header structure as CTB v3, with additional support for:
+
 - Per-layer exposure times
 - Per-layer lift heights/speeds
 - PageNumber field in layer table
@@ -221,6 +228,7 @@ Same header structure as CTB v3, with additional support for:
 Encrypted CTB is a different container from plain CTB v3/v4/v5, not just a flag on the v3 layout. The fixed 48-byte header points at the encrypted settings block and a final encrypted SHA-256 signature. The AES key/IV are derived from UVtools-compatible Chitubox constants with the `UVtools` XOR mask. Kiri keeps these primitives native in JS in `x_ctb_crypto.js`; full writer support still needs the encrypted settings table, layer pointer table, resin parameters, previews, and final signature wired into `x_ctb`.
 
 Key tables:
+
 - File header: 48 bytes
 - Slicer settings: 288 bytes
 - Layer pointer: 16 bytes
@@ -239,6 +247,7 @@ Key tables:
 **Machines:** PhotonS
 
 **RLE1 Encoding (PWS):**
+
 ```
 For each run (1 byte):
   bit 7    = white/on flag
@@ -263,6 +272,7 @@ Constant: RLE1EncodingLimit = 0x7D (125)
 The PW0 format uses a **nibble-coded variable-length RLE**, NOT a simple 3-byte RLE as previously documented.
 
 **Encoding Rules:**
+
 ```
 Each byte is split: [4-bit code] [4-bit repeat]
 
@@ -284,6 +294,7 @@ Code interpretation:
 ```
 
 **Decode Algorithm (from UVtools):**
+
 ```c
 for (int i = 0; i < encodedRle.Length; i++)
 {
@@ -316,6 +327,7 @@ for (int i = 0; i < encodedRle.Length; i++)
 ```
 
 **Encode Algorithm (from UVtools):**
+
 ```c
 for each pixel:
     int color = pixel >> 4;  // Extract upper nibble
@@ -337,11 +349,13 @@ for each pixel:
 ```
 
 **Constants:**
+
 ```c
 RLE4EncodingLimit = 0xFFF = 4095
 ```
 
 **Example Encodings:**
+
 ```
 White run of 1000 pixels:
   Binary: 1111 0011 1110 1000
@@ -371,6 +385,7 @@ Gray (0xAA) run of 5 pixels:
 ```
 
 **Key Differences from Previous Documentation:**
+
 - NOT a fixed 3-byte format
 - Variable length: 1 byte for grayscale (repeat ≤15), 2 bytes for black/white
 - Nibble-based encoding optimizes for common cases
@@ -384,22 +399,26 @@ All modern Anycubic formats use **Nibble-coded RLE4** encoding.
 ##### 2.2.1 Version-Mapped Formats Before v518
 
 **Extension version sets from UVtools `GetAvailableVersionsForExtension`:**
+
 - `.pwmx`, `.pwmo`, `.pwms`, `.pmsq`, `.dlp`: v1, v515, v516
 - `.pwma`, `.pm3`, `.pm3m`: v515, v516
 - `.pwmb`, `.dl2p`, `.pmx2`, `.pm3r`: v515, v516, v517
 
 **Machines:**
+
 - PhotonMono, PhotonMonoX, PhotonMonoX2
 - PhotonMono4K, PhotonMonoSE, PhotonMonoSQ
 - PhotonMonoX6K, PhotonM3, PhotonM3Plus, PhotonM3Max, PhotonM3Premium
 - PhotonUltra, PhotonD2
 
 **Features (v515+):**
+
 - Nibble-coded RLE4 encoding
 - Enhanced print parameters
 - Per-layer settings support
 
 **Features (v516+):**
+
 - Dual lift/retract speeds
 - Advanced motion profiles
 
@@ -408,12 +427,14 @@ All modern Anycubic formats use **Nibble-coded RLE4** encoding.
 **Extensions:** `.pm3n`, `.pm5`, `.px6s` (`.pm4n` is registered by UVtools but not explicitly version-pinned; treat v517 as an assumption until fixture-verified)
 
 **Machines:**
+
 - PhotonMono2 (.pm3n)
 - PhotonMonoM5 (.pm5)
 - PhotonMonoX6Ks (.px6s)
 - PhotonMono4 (.pm4n) is mapped as a machine, but its source and PrusaSlicer profile omit an explicit file version
 
 **New Features:**
+
 - `SOFTWARE` and `MODEL` sections compared with earlier versions
 - `MACHINE` property field count rises to 7
 - Thumbnail defaults are 224x168 and 330x190; v517 writes the first `PREVIEW` table
@@ -425,10 +446,12 @@ All modern Anycubic formats use **Nibble-coded RLE4** encoding.
 **Extensions:** `.pm5s`, `.m5sp` (`.pwc` is registered as Anycubic Custom Machine but falls through to all available versions)
 
 **Machines:**
+
 - PhotonMonoM5s (.pm5s)
 - PhotonMonoM5sPro (.m5sp)
 
 **New Features:**
+
 - 11 FileMark table entries
 - second `PREVIEW2` table may be present
 - Preview sizes: 224x168, 330x190
@@ -437,6 +460,7 @@ All modern Anycubic formats use **Nibble-coded RLE4** encoding.
 - `MACHINE` property field count rises to 15
 
 **Anycubic FileMark and Section Table (v515+):**
+
 ```
 Offset | Size | Type   | Field                    | Notes
 -------|------|--------|--------------------------|------------------
@@ -459,6 +483,7 @@ Offset | Size | Type   | Field                    | Notes
 Each section starts with a 12-byte null-padded table name followed by a 32-bit table length. The `HEADER` table length is version-dependent: 80 for early versions, 84 for v516, 92 for v517, and 96 for v518.
 
 **Machine Detection (Extension → Machine mapping):**
+
 ```
 .pm3n  → PhotonMono2
 .pm4n  → PhotonMono4 (version ambiguous in UVtools; v517 is an implementation assumption pending fixtures)
@@ -474,18 +499,20 @@ Each section starts with a 12-byte null-padded table name followed by a 32-bit t
 ```
 
 **Photon Mono 4 / `.pm4n` Validation Notes:**
+
 - UVtools registers `.pm4n` and maps it to `PhotonMono4`, but `GetAvailableVersionsForExtension()` falls through to all Anycubic versions.
 - The bundled PrusaSlicer profile declares `FILEFORMAT_PM4N` but does not include `FILEVERSION_517`.
 - Treat v517 output as a reasonable implementation assumption, not a source-verified fact, until a real Photon Mono 4 fixture confirms it.
 - Fixture validation should verify `ANYCUBIC` at offset `0x00`, version at offset `0x0C`, `HEADER` table length, 32-byte `LayerDef` entries, and whether `SUBIMGS` / `PREVIEW2` are present.
 
 **Anycubic Version Pattern:**
-| Extension | Machine | Version in UVtools |
-|-----------|---------|--------------------|
-| `.pm3n` | PhotonMono2 | 517 |
-| `.pm4n` | PhotonMono4 | fallback: 1, 515, 516, 517, 518 |
-| `.pm5` | PhotonMonoM5 | 517 |
-| `.pm5s` | PhotonMonoM5s | 518 |
+
+| Extension | Machine       | Version in UVtools              |
+| --------- | ------------- | ------------------------------- |
+| `.pm3n`   | PhotonMono2   | 517                             |
+| `.pm4n`   | PhotonMono4   | fallback: 1, 515, 516, 517, 518 |
+| `.pm5`    | PhotonMonoM5  | 517                             |
+| `.pm5s`   | PhotonMonoM5s | 518                             |
 
 #### 2.3 Anycubic ZIP Format (PWSZ)
 
@@ -494,6 +521,7 @@ Each section starts with a 12-byte null-padded table name followed by a 32-bit t
 **Layer Format:** PNG images in staged directories
 
 **Structure:**
+
 - `manifest` - JSON with version, machine_type, machine_extern
 - `bott_0/*.png`, `bott_1/*.png` - Bottom stage layers
 - `normal_0/*.png`, `normal_1/*.png` - Normal stage layers
@@ -502,15 +530,16 @@ Each section starts with a 12-byte null-padded table name followed by a 32-bit t
 
 ## RLE Encoding Comparison
 
-| Format | Name | Bytes/Run | Max Repeat | Color Bits | Notes |
-|--------|------|-----------|------------|------------|-------|
-| RLE1/RLE125 (PWS/CBDDLP) | Bit-plane run-length | 1 (fixed) | 125 encoded / 127 stored | 1 per AA plane | bit 7 on/off, low 7 bits repeat |
-| RLE4 (PW0) | Nibble-coded | 1-2 (variable) | 4095 (B/W), 15 (gray) | 8 | Optimized variable-length |
-| CTB variable RLE | 7-bit grayscale variable RLE | 1-5 (variable) | 268,435,455 | 7 stored / 8 expanded | CTB v3+ layer data |
-| RLE128 (PhotonS) | Run-Length 128 | 2 (fixed) | 128 | 8 | Length, Color (BE) |
-| GOO RLE | Chunked | 1-5 (+ checksum) | 268435455 | 8 | 0x55 stream + inverted checksum, layer CRLF-delimited |
+| Format                   | Name                         | Bytes/Run        | Max Repeat               | Color Bits            | Notes                                                 |
+| ------------------------ | ---------------------------- | ---------------- | ------------------------ | --------------------- | ----------------------------------------------------- |
+| RLE1/RLE125 (PWS/CBDDLP) | Bit-plane run-length         | 1 (fixed)        | 125 encoded / 127 stored | 1 per AA plane        | bit 7 on/off, low 7 bits repeat                       |
+| RLE4 (PW0)               | Nibble-coded                 | 1-2 (variable)   | 4095 (B/W), 15 (gray)    | 8                     | Optimized variable-length                             |
+| CTB variable RLE         | 7-bit grayscale variable RLE | 1-5 (variable)   | 268,435,455              | 7 stored / 8 expanded | CTB v3+ layer data                                    |
+| RLE128 (PhotonS)         | Run-Length 128               | 2 (fixed)        | 128                      | 8                     | Length, Color (BE)                                    |
+| GOO RLE                  | Chunked                      | 1-5 (+ checksum) | 268435455                | 8                     | 0x55 stream + inverted checksum, layer CRLF-delimited |
 
 **Performance Comparison:**
+
 - **RLE1/RLE125/RLE128:** Simple, predictable, easy to implement, but PWS/CBDDLP are bit-plane encodings rather than full grayscale runs
 - **CTB variable RLE:** Better compression and grayscale AA, plus optional seed-derived XOR
 - **Nibble RLE4:** Best compression for grayscale AA, complex encoding
@@ -527,6 +556,7 @@ Each section starts with a 12-byte null-padded table name followed by a 32-bit t
 **RLE:** RLE128 (limit: 128, big-endian)
 
 **Header (Big-Endian):**
+
 ```
 Offset | Size | Type   | Field                    | Endianness
 -------|------|--------|--------------------------|------------
@@ -540,6 +570,7 @@ Offset | Size | Type   | Field                    | Endianness
 ```
 
 **RLE128 Encoding (Big-Endian):**
+
 ```
 For each run (2 bytes):
   byte[0] = length (1-128, BE)
@@ -553,6 +584,7 @@ For each run (2 bytes):
 **RLE:** Chunked stream with checksum. The layer payload is followed by a CRLF delimiter, but CRLF is not part of the RLE chunk grammar.
 
 **RLE Format:**
+
 ```
 Layer payload:
   0x55                    layer RLE magic
@@ -586,6 +618,7 @@ Layer record delimiter after payload: 0x0D 0x0A.
 **RLE:** Standard RLE
 
 **Header (v3):**
+
 ```
 Offset | Size | Type   | Field                    | Endianness
 -------|------|--------|--------------------------|------------
@@ -610,11 +643,13 @@ Offset | Size | Type   | Field                    | Endianness
 **Layer Format:** PNG images
 
 **Required Files:**
+
 - `config.ini` - Print parameters
 - `prusaslicer.ini` - Slicer settings (optional)
 - `00000.png`, `00001.png`, ... - Layers (5-digit zero-padded)
 
 **config.ini Sample:**
+
 ```ini
 [general]
 expTime = 8.0
@@ -635,12 +670,14 @@ PrinterModel = SL1
 **Layer Format:** PNG images
 
 **Structure:**
+
 - `config.json` - Print configuration
 - `slice/0.png`, `slice/1.png`, ... - Layer images
 - `preview/huge.png` - Large preview
 - `preview/tiny.png` - Small preview
 
 **config.json Schema:**
+
 ```json
 {
   "size": {
@@ -680,6 +717,7 @@ PrinterModel = SL1
 These formats are intended as a vendor-neutral interchange and debugging target. They carry enough process metadata to preserve behavior before conversion to a proprietary printer format.
 
 **Shared manifest process fields:**
+
 ```json
 {
   "process": {
@@ -718,21 +756,25 @@ VSLA layer SVG roots additionally include process data attributes such as `data-
 ### Recommended Implementation Order
 
 **Tier 1 - Simplest (Start Here):**
+
 1. **ImageFile** - Single image, no container
 2. **UVJ** - JSON + PNG (if JSON/ZIP available)
 3. **SL1** - INI + PNG (if INI/ZIP available)
 
 **Tier 2 - Binary Formats:**
+
 1. **CBDDLP v1** - Simplest binary RLE
 2. **CTB v3** - Modern standard, widely used
 3. **PWS** - Simple RLE1 encoding
 
 **Tier 3 - Advanced Binary:**
+
 1. **PW0** - Nibble-coded RLE4 (complex but efficient)
 2. **PhotonS** - Big-endian RLE128
 3. **GOO** - Chunked RLE with layer checksum
 
 **Tier 4 - Specialized:**
+
 1. **CTBEncrypted** - Requires AES-256-CBC
 2. **AnycubicFile v517+** - Modern features, complex header
 3. **CXDLP** - Big-endian offsets
@@ -740,6 +782,7 @@ VSLA layer SVG roots additionally include process data attributes such as `data-
 ### Essential Algorithms (Pseudocode)
 
 #### RLE125 Bit-Plane Decoder (CBDDLP/PWS)
+
 ```python
 def decode_rle125_bitplanes(data: bytes, width: int, height: int, aa: int = 1) -> bytes:
     levels = bytearray(width * height)
@@ -768,6 +811,7 @@ def decode_rle125_bitplanes(data: bytes, width: int, height: int, aa: int = 1) -
 ```
 
 #### RLE125 Bit-Plane Encoder (Single Plane)
+
 ```python
 def encode_rle125_bitplane(bits: list[bool]) -> bytes:
     result = bytearray()
@@ -795,6 +839,7 @@ def encode_rle125_bitplane(bits: list[bool]) -> bytes:
 ```
 
 #### Nibble-Coded RLE4 Decoder (PW0)
+
 ```python
 def decode_rle4_nibble(data: bytes, width: int, height: int) -> bytes:
     pixels = bytearray(width * height)
@@ -828,6 +873,7 @@ def decode_rle4_nibble(data: bytes, width: int, height: int) -> bytes:
 ```
 
 #### Nibble-Coded RLE4 Encoder (PW0)
+
 ```python
 def encode_rle4_nibble(pixels: bytes) -> bytes:
     result = bytearray()
@@ -862,6 +908,7 @@ def encode_rle4_nibble(pixels: bytes) -> bytes:
 ```
 
 #### CTB Variable RLE Decoder
+
 ```python
 def decode_ctb_variable_rle(data: bytes, width: int, height: int) -> bytes:
     pixels = bytearray(width * height)
@@ -903,16 +950,19 @@ def decode_ctb_variable_rle(data: bytes, width: int, height: int) -> bytes:
 ### Dependencies by Format
 
 **Minimal (No external libs):**
+
 - Binary I/O, basic data structures
 - Formats: CBDDLP, CTB, PWS, PW0, PhotonS, GOO, CXDLP, FDG
 
 **Recommended:**
+
 - ZIP library: SL1, UVJ, VDT, NanoDLP, ZCode, ZCodex, CWS, JXS
 - JSON parser: UVJ, VDT, AnycubicZip, NanoDLP
 - INI parser: SL1, JXS
 - PNG encoder/decoder: All archive formats
 
 **Advanced:**
+
 - AES-256-CBC: CTBEncrypted
 - XML parser: CWS, VDA, ZCode, SVGX
 - SVG parser: SVGX
@@ -953,11 +1003,13 @@ def decode_ctb_variable_rle(data: bytes, width: int, height: int) -> bytes:
 ### UVtools Source Cross-References
 
 **CTB:**
+
 - `UVtools.Core/FileFormats/ChituboxFile.cs`: `DecodeCtbImage`, `EncodeCtbImage`, `LayerRleCryptBuffer`
 - `UVtools.Core/FileFormats/CTBEncryptedFile.cs`: encrypted CTB v4-v5 container and AES handling
 - `src/kiri/mode/sla/work/x_ctb_crypto.js`: native JS AES-256-CBC/no-padding, CTB layer XOR, encrypted CTB constants
 
 **Anycubic:**
+
 - `UVtools.Core/FileFormats/AnycubicFile.cs`: `FileMark`, `Header`, `LayerDef`, `GetAvailableVersionsForExtension`, `PrinterModel`
 - `PrusaSlicer/printer/Anycubic Photon Mono 4.ini`: declares `FILEFORMAT_PM4N` without an explicit file version
 
@@ -967,25 +1019,25 @@ def decode_ctb_variable_rle(data: bytes, width: int, height: int) -> bytes:
 
 ### By Use Case
 
-| Use Case | Format | Reason |
-|----------|--------|--------|
-| Maximum compatibility | CTB v3 | Widest printer support |
-| Smallest file size | CBDDLP | Simple binary RLE |
+| Use Case              | Format            | Reason                    |
+| --------------------- | ----------------- | ------------------------- |
+| Maximum compatibility | CTB v3            | Widest printer support    |
+| Smallest file size    | CBDDLP            | Simple binary RLE         |
 | Best compression (AA) | PW0 (nibble RLE4) | Optimized variable-length |
-| Archival/preservation | UVJ or SL1 | Open, PNG-based |
-| Editing/manipulation | SL1 or UVJ | Human-readable config |
-| Fastest decode | SL1, UVJ | Standard PNG decoders |
-| Embedded systems | CBDDLP | Minimal complexity |
-| Modern Anycubic | .pm5s (v518) | Latest features |
+| Archival/preservation | UVJ or SL1        | Open, PNG-based           |
+| Editing/manipulation  | SL1 or UVJ        | Human-readable config     |
+| Fastest decode        | SL1, UVJ          | Standard PNG decoders     |
+| Embedded systems      | CBDDLP            | Minimal complexity        |
+| Modern Anycubic       | .pm5s (v518)      | Latest features           |
 
 ### By Complexity
 
-| Level | Formats |
-|-------|---------|
-| **Low** | ImageFile, UVJ, SL1, CBDDLP, CTB v3, PWS |
-| **Medium** | PW0, PhotonS, GOO, PHZ, FDG, CXDLP |
-| **High** | AnycubicFile v517+, VDT, NanoDLP, ZCode |
-| **Very High** | CTBEncrypted, SVGX, OSF |
+| Level         | Formats                                  |
+| ------------- | ---------------------------------------- |
+| **Low**       | ImageFile, UVJ, SL1, CBDDLP, CTB v3, PWS |
+| **Medium**    | PW0, PhotonS, GOO, PHZ, FDG, CXDLP       |
+| **High**      | AnycubicFile v517+, VDT, NanoDLP, ZCode  |
+| **Very High** | CTBEncrypted, SVGX, OSF                  |
 
 ---
 
@@ -1007,6 +1059,7 @@ def decode_ctb_variable_rle(data: bytes, width: int, height: int) -> bytes:
 ## Validation Notes
 
 **Verified Against:**
+
 - UVtools.Core/FileFormats/ source code
 - Chitubox 1.8 .ctb fixtures
 - AnycubicFile.cs implementation (lines 2270-2409 for RLE4)
@@ -1014,6 +1067,7 @@ def decode_ctb_variable_rle(data: bytes, width: int, height: int) -> bytes:
 - Format version constants and extension mappings
 
 **Status:**
+
 - ✓ CTB v3 header corrected (32-bit floats verified)
 - ✓ Nibble-coded RLE4 algorithm extracted from working implementation
 - ✓ Anycubic v517/v518 extensions documented
