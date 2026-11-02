@@ -26,3 +26,4 @@ web/boot/bundle*
 .drcode/github_state.json
 .drcode/worktrees/
 .drcode/merge_reports/
+__pycache__
