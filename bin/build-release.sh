@@ -134,6 +134,29 @@ fi
 
 log "version=$VERSION target=$TARGET web_only=$WEB_ONLY out=$OUT_DIR${SKIP_SETUP:+ skip_setup=1}"
 
+# --- generated sources ------------------------------------------------------------
+# src/ext/three.js, src/ext/jszip-esm.js, src/ext/quickjs.js and src/void/solver/
+# are gitignored artifacts produced by `npm run setup` (via `npm run webpack-ext`).
+# esbuild cannot resolve imports of them until they exist.
+need_ext() {
+    [ -f src/ext/three.js ] && [ -f src/ext/jszip-esm.js ] && [ -f src/void/solver/planegcs.js ]
+}
+
+ensure_generated() {
+    need_ext && return 0
+    warn "generated sources missing (src/ext/three.js, src/ext/jszip-esm.js, src/void/solver/planegcs.js)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+        warn "dry-run: would run 'npm run webpack-ext' to generate them"
+        return 0
+    fi
+    if [ ! -d node_modules ]; then
+        die "node_modules missing; run 'npm run setup' first (it installs deps and generates src/ext + src/void/solver)"
+    fi
+    log "generating ext bundles: npm run webpack-ext"
+    run npm run webpack-ext
+    need_ext || die "generated sources still missing; run 'npm run setup' and retry"
+}
+
 # --- build: web bundle ----------------------------------------------------------
 build_web() {
     log "building prod web bundle (version $VERSION)"
@@ -214,6 +237,7 @@ upload() {
 }
 
 # --- main -------------------------------------------------------------------------
+ensure_generated
 build_web
 
 if [ "$WEB_ONLY" -eq 0 ]; then
