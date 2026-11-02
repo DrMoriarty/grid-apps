@@ -132,7 +132,9 @@ if [ -n "$UPLOAD_TAG" ]; then
     command -v gh >/dev/null 2>&1 || die "--upload requires the GitHub CLI (gh) in PATH"
 fi
 
-log "version=$VERSION target=$TARGET web_only=$WEB_ONLY out=$OUT_DIR${SKIP_SETUP:+ skip_setup=1}"
+skip_label=""
+[ "$SKIP_SETUP" -eq 1 ] && skip_label=" skip_setup=1"
+log "version=$VERSION target=$TARGET web_only=$WEB_ONLY out=$OUT_DIR$skip_label"
 
 # --- generated sources ------------------------------------------------------------
 # src/ext/three.js, src/ext/jszip-esm.js, src/ext/quickjs.js and src/void/solver/
