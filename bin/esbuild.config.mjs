@@ -102,7 +102,7 @@ const rec = {
 async function buildApp() {
     try {
         // Concatenate kiri devices
-        generateDevices();
+        await generateDevices();
 
         // Bundle void main app
         await build(Object.assign({}, rec, {
