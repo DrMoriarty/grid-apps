@@ -13,7 +13,6 @@ logs
 mod
 node_modules
 pack
-package-lock.json
 src/ext/jszip-esm.js
 src/ext/quickjs.js
 src/ext/three.js
