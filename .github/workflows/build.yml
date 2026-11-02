@@ -30,6 +30,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         run: npm run build
 
+      - name: Build Electron app (mac x64)
+        if: matrix.os == 'macos-latest'
+        run: npx electron-builder --mac --x64
+
       - name: Display Build Artifacts
         run: ls -l dist
 
@@ -110,6 +114,16 @@ jobs:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/KiriMoto-mac-arm64.dmg
           asset_name: KiriMoto-MacOS-arm-${{ env.TAG_NAME }}.dmg
+          asset_content_type: application/octet-stream
+
+      - name: Upload Release Asset (macOS x64)
+        uses: actions/upload-release-asset@v1.0.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/KiriMoto-mac-x64.dmg
+          asset_name: KiriMoto-MacOS-x64-${{ env.TAG_NAME }}.dmg
           asset_content_type: application/octet-stream
 
       - name: Upload Release Asset (Windows)

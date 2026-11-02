@@ -15,7 +15,7 @@
 #   ./bin/build-release.sh [options]
 #
 # Options:
-#   -t, --target <auto|win|linux|mac|all>   build target(s)
+#   -t, --target <auto|win|linux|mac|mac-intel|all>   build target(s)
 #                                           (default: auto — detect host OS)
 #   -w, --web-only                          build only the web bundle, skip Electron
 #   -o, --out <dir>                         output directory (default: dist/release)
@@ -32,6 +32,7 @@
 #   ./bin/build-release.sh -t all                # all desktop targets
 #   ./bin/build-release.sh -w                    # web bundle only
 #   ./bin/build-release.sh -t mac -u v4.7.0      # build + upload to release
+#   ./bin/build-release.sh -t mac-intel          # intel (x86_64) mac build
 # =============================================================================
 set -euo pipefail
 
@@ -83,7 +84,12 @@ run() {
 
 detect_target() {
     case "$(uname -s)" in
-        Darwin)                 echo "mac" ;;
+        Darwin)
+            case "$(uname -m)" in
+                x86_64) echo "mac-intel" ;;
+                *)      echo "mac" ;;
+            esac
+            ;;
         Linux)                  echo "linux" ;;
         MINGW*|MSYS*|CYGWIN*)   echo "win" ;;
         *) die "cannot detect host OS: $(uname -s); pass --target explicitly" ;;
@@ -92,26 +98,28 @@ detect_target() {
 
 validate_target() {
     case "$1" in
-        win|linux|mac) return 0 ;;
-        *) die "invalid target: $1 (expected win|linux|mac)" ;;
+        win|linux|mac|mac-intel) return 0 ;;
+        *) die "invalid target: $1 (expected win|linux|mac|mac-intel)" ;;
     esac
 }
 
-# electron-builder args per target (mirrors build-win / build-linux / build-mac)
+# electron-builder args per target (mirrors build-win / build-linux / build-mac / build-mac-intel)
 eb_args() {
     case "$1" in
-        win)    echo "--win --x64" ;;
-        linux)  echo "--linux --x64" ;;
-        mac)    echo "--mac --arm64" ;;
+        win)        echo "--win --x64" ;;
+        linux)      echo "--linux --x64" ;;
+        mac)        echo "--mac --arm64" ;;
+        mac-intel)  echo "--mac --x64" ;;
     esac
 }
 
 # artifact globs per target, relative to dist/
 artifacts_for() {
     case "$1" in
-        win)    echo "dist/*.exe dist/*.zip" ;;
-        linux)  echo "dist/*.AppImage" ;;
-        mac)    echo "dist/*.dmg" ;;
+        win)        echo "dist/*.exe dist/*.zip" ;;
+        linux)      echo "dist/*.AppImage" ;;
+        mac)        echo "dist/*.dmg" ;;
+        mac-intel)  echo "dist/*.dmg" ;;
     esac
 }
 
@@ -123,7 +131,7 @@ if [ "$TARGET" = "auto" ]; then
     TARGET="$(detect_target)"
 fi
 if [ "$WEB_ONLY" -eq 0 ] && [ "$TARGET" = "all" ]; then
-    for t in win linux mac; do validate_target "$t"; done
+    for t in win linux mac mac-intel; do validate_target "$t"; done
 else
     validate_target "$TARGET"
 fi
@@ -202,7 +210,7 @@ collect() {
     # desktop artifacts
     if [ "$WEB_ONLY" -eq 0 ]; then
         local targets
-        if [ "$TARGET" = "all" ]; then targets="win linux mac"; else targets="$TARGET"; fi
+        if [ "$TARGET" = "all" ]; then targets="win linux mac mac-intel"; else targets="$TARGET"; fi
         local t glob f
         for t in $targets; do
             for glob in $(artifacts_for "$t"); do
@@ -244,7 +252,7 @@ build_web
 
 if [ "$WEB_ONLY" -eq 0 ]; then
     if [ "$TARGET" = "all" ]; then
-        for t in win linux mac; do
+        for t in win linux mac mac-intel; do
             build_desktop "$t"
         done
     else
