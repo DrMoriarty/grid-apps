@@ -32,7 +32,10 @@ export class Topo {
             maxX = bounds.max.x,
             minY = bounds.min.y,
             maxY = bounds.max.y,
-            zBottom = contour.bottom ? workarea.bottom_z : 0,
+            // zBottom priority: per-op numeric ov_botz (already applied to
+            // workarea.bottom_z by slice.js) > legacy `bottom` checkbox > 0.
+            // ov_botz works without the global camZBottom that `bottom` requires.
+            zBottom = (contour.bottom || contour.ov_botz) ? workarea.bottom_z : 0,
             zMin = workarea.bottom_z + 0.0001,
             boundsX = maxX - minX,
             boundsY = maxY - minY,

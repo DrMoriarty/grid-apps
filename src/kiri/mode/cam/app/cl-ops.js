@@ -414,7 +414,9 @@ export function createPopOps() {
         inside: 'camContourIn',
         clipto: 'camStockClipTo',
         filter: 'camContourFilter',
-        axis: 'X'
+        axis: 'X',
+        ov_topz: 0,
+        ov_botz: 0,
     }).inputs = {
         tool: UC.newSelect(LANG.cc_tool, {}, "tools"),
         axis: UC.newSelect(LANG.cd_axis, {}, "xyaxis"),
@@ -435,7 +437,11 @@ export function createPopOps() {
         inside: UC.newBoolean(LANG.cf_olin_s, undefined, { title: LANG.cf_olin_l }),
         bottom: UC.newBoolean(LANG.cf_botm_s, undefined, { title: LANG.cf_botm_l, show: (op, conf) => conf ? conf.process.camZBottom : 0 }),
         clipto: UC.newBoolean(LANG.cf_clip_s, undefined, { title:LANG.cf_clip_l, show: () => !isWebGPU() }),
-        filter: UC.newRow([UC.newButton(LANG.filter, contourFilter)], { class: "ext-buttons f-row" })
+        filter: UC.newRow([UC.newButton(LANG.filter, contourFilter)], { class: "ext-buttons f-row" }),
+        exp: UC.newExpand("top & bottom", ov_hover),
+        ov_topz: UC.newInput(LANG.ou_ztop_s, ov_topz),
+        ov_botz: UC.newInput(LANG.ou_zbot_s, ov_botz),
+        exp_end: UC.endExpand()
     };
 
     createPopOp('lathe', {

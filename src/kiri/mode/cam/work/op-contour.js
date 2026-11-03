@@ -76,6 +76,58 @@ function createFilter(op, origin, axis) {
     return filter;
 }
 
+/**
+ * Split open polylines wherever point z exceeds zmax, interpolating
+ * crossing points at exactly zmax and dropping the portions above.
+ * Used to apply a per-op Z Top limit to contour terrain-following paths.
+ */
+function clipPolysToZMax(polys, zmax) {
+    const out = [];
+    for (let poly of polys) {
+        const pts = poly.points;
+        let cur = null;
+        const flush = () => {
+            if (cur && cur.length > 1) {
+                out.push(cur);
+            }
+            cur = null;
+        };
+        for (let i = 0; i < pts.length; i++) {
+            const p = pts[i];
+            if (p.z > zmax) {
+                if (cur) {
+                    // ascending crossing: end segment at zmax
+                    const a = cur.last();
+                    const t = (zmax - a.z) / (p.z - a.z);
+                    cur.push(newPoint(
+                        a.x + (p.x - a.x) * t,
+                        a.y + (p.y - a.y) * t,
+                        zmax
+                    ));
+                    flush();
+                }
+            } else {
+                if (!cur) {
+                    cur = newPolygon().setOpen();
+                    if (i > 0 && pts[i-1].z > zmax) {
+                        // descending crossing: start segment at zmax
+                        const a = pts[i-1];
+                        const t = (zmax - a.z) / (p.z - a.z);
+                        cur.push(newPoint(
+                            a.x + (p.x - a.x) * t,
+                            a.y + (p.y - a.y) * t,
+                            zmax
+                        ));
+                    }
+                }
+                cur.push(p);
+            }
+        }
+        flush();
+    }
+    return out;
+}
+
 class OpContour extends CamOp {
     constructor(state, op) {
         super(state, op);
@@ -101,6 +153,16 @@ class OpContour extends CamOp {
                 progress(index / total, msg);
             },
             ondone: (slices) => {
+                // apply per-op Z Top limit: split camLines where z exceeds
+                // top_z (post-processing keeps topo raster/contour untouched)
+                if (op.ov_topz) {
+                    let zTopClamp = state.workarea.top_z;
+                    for (let slice of slices) {
+                        if (slice.camLines) {
+                            slice.camLines = clipPolysToZMax(slice.camLines, zTopClamp);
+                        }
+                    }
+                }
                 slices = filter(slices);
                 this.sliceOut = slices;
                 addSlices(slices);
