@@ -389,6 +389,44 @@ class OpArea extends CamOp {
                     });
                     paths.forEach(poly => poly.isClosed() && poly.push(poly.first()));
                     POLY.setWinding(paths.filter(p => p.isClosed()), direction === 'climb');
+                } else
+                if (sr_type === 'spiral') {
+                    // continuous archimedean spiral centered on the area bounds
+                    // r = pitch * theta / (2*pi) with pitch = stepover
+                    let cx = (bounds.min.x + bounds.max.x) / 2;
+                    let cy = (bounds.min.y + bounds.max.y) / 2;
+                    // cover the full bounding diagonal so outer revolutions
+                    // reach every corner of the area before clipping
+                    let maxr = Math.hypot(
+                        bounds.max.x - bounds.min.x,
+                        bounds.max.y - bounds.min.y
+                    ) / 2 + toolOver;
+                    let pitch = toolOver;
+                    let b = pitch / (2 * Math.PI);
+                    // densify so arc length between points stays under stepover/2
+                    let seg = toolOver / 2;
+                    let spiral = [];
+                    let theta = 0;
+                    for (;;) {
+                        let r = b * theta;
+                        if (r > maxr) break;
+                        spiral.push(newPoint(
+                            cx + r * Math.cos(theta),
+                            cy + r * Math.sin(theta), 0
+                        ).toClipper());
+                        // ds/dtheta = b * sqrt(theta^2 + 1) for archimedean spiral
+                        theta += seg / (b * Math.hypot(theta, 1));
+                    }
+                    // use clipper to clip spiral (open path) to the area polygon
+                    let clip = new clib.Clipper();
+                    let ctre = new clib.PolyTree();
+                    clip.AddPaths([ spiral ], ptyp.ptSubject, false);
+                    clip.AddPaths(POLY.toClipper([ area ]), ptyp.ptClip, true);
+                    if (clip.Execute(ctyp.ctIntersection, ctre, cfil.pftNonZero, cfil.pftEvenOdd)) {
+                        for (let node of ctre.m_AllPolys) {
+                            paths.push(POLY.fromClipperNode(node, 0));
+                        }
+                    }
                 }
 
                 // convert resulting poly lines to raster float32 array groups

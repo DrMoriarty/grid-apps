@@ -734,6 +734,8 @@ self.lang['en-us'] = {
     cl_xpnd_l:      ["grow starting radius for step down. radius is defined as the highest Z point measured from the X axis center of the part"],
 
     // CNC AREA OP
+    ca_pat_s:       "pattern",
+    ca_pat_l:       ["path pattern: linear (raster scan lines), offset (contour rings),","spiral (continuous archimedean spiral - no retracts,","constant tool engagement on curved surfaces)"],
     ca_altr_s:      "alternate",
     ca_altr_l:      "alternate direction of travel lines (zigzag)",
     ca_sang_s:      "step angle",
