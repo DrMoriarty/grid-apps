@@ -80,8 +80,12 @@ jobs:
     needs: build
 
     steps:
+      # Full history AND tags are needed to build the changelog range
+      # (a default shallow checkout carries neither).
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create release name
         run: node bin/github-getver.js "${{ github.event_name }}"
@@ -117,6 +121,46 @@ jobs:
           done
           ls -l
 
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        env:
+          TAG_REF: ${{ github.ref }}
+        run: |
+          # Notes are only derived for tag pushes; manual runs have no tag ref.
+          if [[ "${TAG_REF}" != refs/tags/v* ]]; then
+            echo "Not a tag push; skipping the manual notes body."
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version="${TAG_REF#refs/tags/v}"
+          # `|| true` guards against pipefail when no other tag exists yet.
+          previous_tag="$(git tag --sort=-v:refname | grep -v "^v${version}$" | head -1 || true)"
+
+          if [ -z "${previous_tag}" ]; then
+            # First release: no range to describe — let the auto-notes stand alone.
+            echo "Found no previous tag; skipping the manual notes body."
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changelog range: ${previous_tag}..HEAD"
+          log="$(git log "${previous_tag}..HEAD" --no-merges --pretty=format:'- %s (%h)')"
+          if [ -z "${log}" ]; then
+            # Tag re-push or empty range: nothing to list manually.
+            echo "No commits between ${previous_tag} and HEAD; skipping the manual notes body."
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "## What's Changed"
+            echo
+            printf '%s\n' "${log}"
+          } > release-notes.md
+          echo "body_path=release-notes.md" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -126,3 +170,7 @@ jobs:
           prerelease: false
           files: artifacts/*
           fail_on_unmatched_files: true
+          # Auto-notes (full changelog, contributors) are appended below the
+          # manual commit list when body_path is set.
+          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.body_path }}
