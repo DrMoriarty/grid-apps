@@ -26,3 +26,6 @@ web/boot/bundle*
 .drcode/worktrees/
 .drcode/merge_reports/
 __pycache__
+.drcode/search_index.json
+.drcode/stats.json
+.drcode/pending_notifications.json
