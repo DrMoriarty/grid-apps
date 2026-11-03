@@ -2,6 +2,7 @@
 
 import { broker } from '../moto/broker.js';
 import { $, h, estop } from '../moto/webui.js';
+import { mountAppSwitch } from '../moto/appswitch.js';
 import { api } from './api.js';
 import { util } from './util.js';
 import { space } from '../moto/space.js';
@@ -555,6 +556,9 @@ function ui_build() {
         div({ class: "menubar-separator" }),
         div({ id: "top-mode-label" }),
     ]);
+
+    // cross-app switcher (logo dropdown, prepended to the top-left menus)
+    mountAppSwitch($('top-left'), { prepend: true });
 
     // add help buttons
     bind($('top-right'), [

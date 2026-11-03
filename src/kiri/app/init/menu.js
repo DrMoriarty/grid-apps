@@ -1,6 +1,7 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { $, h } from '../../../moto/webui.js';
+import { mountAppSwitch } from '../../../moto/appswitch.js';
 import { api } from '../api.js';
 
 const { div, span, label, input, button, i, hr } = h;
@@ -260,6 +261,8 @@ export const menubar = {
             return;
         }
         h.bind(menubarNode, content(actions));
+        // cross-app switcher (logo dropdown, prepended to the menubar)
+        mountAppSwitch(menubarNode, { prepend: true });
         if (modeToolsNode) {
             h.bind(modeToolsNode, modeTools(actions));
         }

@@ -1,6 +1,7 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { $ } from '../moto/webui.js';
+import { mountAppSwitch } from '../moto/appswitch.js';
 import { api } from './api.js';
 import { tree } from './tree.js';
 import { space } from '../moto/space.js';
@@ -288,6 +289,9 @@ const toolbar = {
                 this.hidePreferencesDialog();
             }
         });
+
+        // cross-app switcher (logo dropdown, prepended to the toolbar)
+        mountAppSwitch(container, { prepend: true });
 
         console.log({ toolbar_built: true });
     },
