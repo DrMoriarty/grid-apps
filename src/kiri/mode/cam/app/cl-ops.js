@@ -788,7 +788,7 @@ export function createPopOps() {
     }).inputs = {
         mode: UC.newSelect(LANG.mo_menu, { post: opRender }, "opmode"),
         tr_type: UC.newSelect(LANG.cc_offs_s, { title: LANG.cc_offs_l, show: isTrace }, "traceoff"),
-        sr_type: UC.newSelect("pattern", { title: "pattern", show: isSurface }, "surftyp"),
+        sr_type: UC.newSelect(LANG.ca_pat_s, { title: LANG.ca_pat_l, show: isSurface }, "surftyp"),
         sep: UC.newBlank({ class: "pop-sep" }),
         exp: UC.newExpand("area selection", { open }),
         menu: UC.newRow([
