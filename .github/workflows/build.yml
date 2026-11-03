@@ -86,7 +86,9 @@ jobs:
           TAG_NAME: ${{ env.TAG_NAME }}
         run: |
           cd artifacts
-          zip -9 "KiriMoto-Ubuntu-x64-${TAG_NAME}.zip" KiriMoto-linux-x64.AppImage
+          shopt -s nullglob
+          # electron-builder names the AppImage with arch "x86_64" (not "x64")
+          zip -9 "KiriMoto-Ubuntu-x64-${TAG_NAME}.zip" KiriMoto-linux-x86_64.AppImage
           for f in KiriMoto-mac-*.dmg; do
             case "$f" in
               *arm64*) mv "$f" "KiriMoto-MacOS-arm-${TAG_NAME}.dmg" ;;
