@@ -422,7 +422,7 @@ class OpArea extends CamOp {
                 let output = await raster.generateToolpaths({
                     paths,
                     step: toolOver / 2,
-                    zFloor: zBottom - 1,
+                    zFloor: zBottom,
                     onProgress: pct => progress(proc + (pinc * (pct/100)))
                 });
                 raster.terminate();
@@ -431,6 +431,8 @@ class OpArea extends CamOp {
                 // todo: add leave_z support
                 for (let path of output.paths) {
                     path = newPolygon().fromArray([1, ...path]);
+                    // clamp terrain-following output to the operation's z bottom
+                    clampZ(path, Infinity, zBottom);
                     if (op.refine) path.refine(op.refine);
                     surface.push(path);
                     let slice = newLayer();
