@@ -25,6 +25,7 @@ export class Topo {
             axis = contour.axis.toLowerCase(),
             contourX = axis === "x",
             contourY = axis === "y",
+            contourM = axis === "merged",
             bounds = widget.getBoundingBox().clone(),
             tolerance = contour.tolerance,
             flatness = contour.flatness || (tolerance / 100),
@@ -113,7 +114,7 @@ export class Topo {
             newslices.push(debug);
         }
 
-        if (webGPU && !contour.nogpu) {
+        if (webGPU && !contour.nogpu && !contourM) {
             // invert tool Z offset for gpu code
             let toolBounds = new THREE.Box3()
                 .expandByPoint({ x: -toolDiameter/2, y: -toolDiameter/2, z: 0 })
@@ -359,7 +360,8 @@ export class Topo {
             maxangle,
             flatness,
             bridge,
-            contourX
+            contourX,
+            merged: contourM
         });
 
         if (topo.raster) {
@@ -400,6 +402,7 @@ export class Topo {
             toolStep,
             contourX,
             contourY,
+            contourM,
             density,
             clipTo,
             clipTab,
@@ -532,7 +535,7 @@ export class Topo {
         const concurrent = self.kiri_worker.minions.running;
 
         const { minX, maxX, minY, maxY, boundsX, boundsY, stepsX, stepsY } = params;
-        const { gridDelta, resolution, density, partOff, toolStep, contourX, contourY } = params;
+        const { gridDelta, resolution, density, partOff, toolStep, contourX, contourY, contourM } = params;
         const { clipTo, clipTab, clipTabZ, tabHeight, newslices, leave } = params;
 
         let stepsTaken = 0,
@@ -542,7 +545,7 @@ export class Topo {
             stepsTotal += ((maxY - minY + partOff * 2) / toolStep) | 0;
         }
 
-        if (contourY) {
+        if (contourY || contourM) {
             stepsTotal += ((maxX - minX + partOff * 2) / toolStep) | 0;
         }
 
@@ -563,7 +566,14 @@ export class Topo {
             tabHeight,
             resolution,
             concurrent,
-            density
+            density,
+            // merged X+Y contouring needs both raster geometries
+            minY,
+            boundsY,
+            stepsX,
+            stepsY,
+            gridDelta,
+            toolStep
         });
 
         let resolver;
@@ -582,6 +592,43 @@ export class Topo {
         });
         let inc = () => { pcount++ };
         let dec = () => { if (--pcount === 0 && concurrent) resolver() };
+
+        if (contourM) {
+            // merged X+Y contouring: emit a single family of Y-direction
+            // columns whose z at each point is the lower of the z the
+            // X-axis raster and the Y-axis raster would leave there. the
+            // cut result matches running both axis passes sequentially,
+            // at the time cost of a single-axis pass.
+            onupdate(0, stepsTotal, "contour merged");
+            const rowStep = resolution * density;
+            for (let x = minX - partOff; x <= maxX + partOff; x += toolStep) {
+                if (x < box.min.x || x > box.max.x) continue;
+                const gridx = Math.round(((x - minX) / boundsX) * stepsX);
+                // locate this column between two X-raster row vertices
+                // (row vertex grid indices, matching crossX_sync stepping)
+                const relx = x - (minX - partOff);
+                const vj = Math.floor(relx / rowStep);
+                inc();
+                trace.crossM({
+                    from: minY - partOff,
+                    to: maxY + partOff,
+                    x,
+                    gridx,
+                    gridy: -gridDelta,
+                    rowT: (relx - vj * rowStep) / rowStep,
+                    rowGxA: -gridDelta + vj * density,
+                    rowGxB: -gridDelta + (vj + 1) * density
+                }, segments => {
+                    if (segments.length > 0) {
+                        let slice = newSlice(x);
+                        slice.camLines = segments;
+                        slicesY.push(slice);
+                    }
+                    onupdate(++stepsTaken, stepsTotal, "contour merged");
+                    dec();
+                });
+            }
+        }
 
         if (contourY) {
             onupdate(0, stepsTotal, "contour y");
@@ -707,7 +754,7 @@ export class Trace {
 
     constructor(probe, params) {
 
-        const { curvesOnly, maxangle, flatness, bridge, contourX, leave } = params;
+        const { curvesOnly, maxangle, flatness, bridge, contourX, merged, leave } = params;
 
         this.params = params;
         this.probe = probe;
@@ -760,13 +807,18 @@ export class Trace {
             const newP = newPoint(x, y, z);
             const lastP = lastPP;
 
+            // merged contours blend two raster directions, so their profile
+            // carries kinks from both. decimate with a tighter slope threshold
+            // so gentle curvature is not over-smoothed into stair artifacts
+            const sflat = merged ? flatness / 4 : flatness;
+
             if (lastP) {
                 const dl = (x - lastP.x) || (y - lastP.y);
                 const dz = z - lastP.z;
                 const slope = Math.atan2(dz, dl);
                 if (curvesOnly && Math.abs(dz) < flatness) {
                     end_poly(newP);
-                } else if (lastSlope !== undefined && Math.abs(lastSlope - slope) < flatness) {
+                } else if (lastSlope !== undefined && Math.abs(lastSlope - slope) < sflat) {
                     latent = newP;
                 } else {
                     if (latent) {
@@ -939,6 +991,93 @@ export class Trace {
             }
             push_point(x, y, tv + leave);
             gridx += density;
+        }
+        end_poly();
+        then(this.slice);
+    }
+
+    crossM(params, then) {
+        const { minions } = self.kiri_worker;
+
+        if (minions && this.cross.concurrent) {
+            minions.queue({
+                cmd: "trace_m",
+                params
+            }, data => {
+                then(codec.decode(data.slice));
+            });
+        } else {
+            this.crossM_sync(params, then);
+        }
+    }
+
+    // merged contouring: trace a Y-direction column taking, at each point,
+    // the lower of the z the Y-axis raster reaches (this column) and the z
+    // the X-axis raster reaches (nearest row, linearly interpolated to this
+    // column's x). the resulting single pass cuts the union of material the
+    // two sequential single-axis passes would remove.
+    crossM_sync(params, then) {
+        const { push_point, end_poly, newtrace, newslice, inClip } = this.object;
+        const { clipTab, tabHeight, clipTo, box, resolution, density, leave } = this.cross;
+        const { minY, boundsY, stepsX, stepsY, gridDelta, toolStep } = this.cross;
+        const { toolAtZ } = this.probe;
+
+        let { from, to, x, gridx, gridy, rowT, rowGxA, rowGxB } = params;
+
+        // memoize row probes: every column crossing a row re-probes the
+        // same bracketing grid points
+        const keySpan = stepsY + 2 * gridDelta + 8;
+        const keyOff = gridDelta + 4;
+        const cache = this.mcache = this.mcache || new Map();
+        const probeM = (gx, gy) => {
+            const key = (gx + keyOff) * keySpan + (gy + keyOff);
+            let v = cache.get(key);
+            if (v === undefined) {
+                cache.set(key, v = toolAtZ(gx, gy));
+            }
+            return v;
+        };
+
+        const step = resolution * density;
+        const checkr = newPoint(0, 0);
+        newslice();
+        newtrace();
+        for (let y = from; y < to; y += step) {
+            if (y < box.min.y || y > box.max.y) {
+                gridy += density;
+                continue;
+            }
+            // z reached by the Y-axis raster at this column point
+            let tv = toolAtZ(gridx, gridy);
+            // z reached by the X-axis raster: nearest row to this point,
+            // interpolated along the row to this column's x position
+            const r = Math.round((y - from) / toolStep);
+            const rowY = from + r * toolStep;
+            if (rowY >= box.min.y && rowY <= box.max.y) {
+                const gridyR = Math.round(((rowY - minY) / boundsY) * stepsY);
+                const za = probeM(rowGxA, gridyR);
+                const zb = probeM(rowGxB, gridyR);
+                const tvR = za + (zb - za) * rowT;
+                if (tvR < tv) {
+                    tv = tvR;
+                }
+            }
+            checkr.x = x;
+            checkr.y = y;
+            // when tabs are on and this point is inside the
+            // tab polygon, ensure z is at least tabHeight
+            if (clipTab && clipTab.length && tv < tabHeight && inClip(clipTab, tv, checkr)) {
+                tv = this.tabZ;
+            }
+            // if the value is on the floor and inside the clip
+            // poly (usually shadow), end the segment
+            if (clipTo && !inClip(clipTo, undefined, checkr)) {
+                end_poly();
+                gridy += density;
+                continue;
+            }
+            push_point(x, y, tv + leave);
+            gridy += density;
         }
         end_poly();
         then(this.slice);
