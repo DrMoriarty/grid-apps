@@ -558,6 +558,10 @@ self.lang['en-us'] = {
     cr_olin_l:      ["limit cutting to","inside part boundaries"],
     cr_clrf_s:      "clear faces",
     cr_clrf_l:      ["add additional clearing passes","for detected z planar flat areas"],
+    cr_spir_s:      "spiral",
+    cr_spir_l:      ["stitch offset rings into a single","continuous morphing spiral to avoid","machine stops between rings"],
+    cr_spirf_s:     "spiral finish ring",
+    cr_spirf_l:     ["append a final full closed ring","along the wall allowance contour","after the spiral"],
 
     // CNC OUTLINE
     co_menu:        "outline",

@@ -53,6 +53,8 @@ class OpRough extends CamOp {
             ov_botz: op.ov_botz,
             ov_topz: op.ov_topz,
             rotated: true,
+            spiral: op.spiral,
+            spiral_finish: op.spiral_finish,
             areas: { [widget.id]: areas.map(p => p.toArray()) },
             surfaces: {}
         }));

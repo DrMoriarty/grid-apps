@@ -30,6 +30,8 @@ class OpPocket extends CamOp {
             smooth,
             spindle,
             sr_type: 'offset',
+            spiral: op.spiral,
+            spiral_finish: op.spiral_finish,
             surfaces,
             tolerance,
             tool,

@@ -224,10 +224,41 @@ class OpArea extends CamOp {
                     }
                     //everything else uses the tool stepover
                     offsets.push(-toolOver);
-                    //actually offset the walls inwards
-                    POLY.offset(clip, offsets, {
-                        count: op.walls ? 1 : (op.steps ?? 999), outs, flat: true, z: z - zMov, ...offopt
-                    });
+                    // when enabled, stitch the offset rings into a single
+                    // continuous morphing spiral instead of emitting them
+                    // as discrete closed rings. this removes the radial
+                    // ring-to-ring transition moves (two ~90 degree turns
+                    // each) that make machines stop and shed inertia.
+                    // falls back to the discrete rings below when the
+                    // geometry does not support a spiral for this area
+                    let doSpiral = op.spiral && !op.walls && !op.omitouter && !tabs.length;
+                    if (doSpiral) {
+                        // collect rings per offset depth via the collector.
+                        // the offset accumulator is a throwaway: rings must
+                        // not leak into the output when the stitch succeeds
+                        let rings = [];
+                        POLY.offset(clip, offsets, {
+                            count: op.steps ?? 999, outs: [], flat: true, z: z - zMov, ...offopt,
+                            call: (polys, count, depth) => { rings[depth] = polys; }
+                        });
+                        // on success the spiral (and optional finish ring)
+                        // are appended to `outs`; on failure the discrete
+                        // rings are emitted as-is, matching legacy output
+                        if (!stitchSpiral(rings, {
+                            outs,
+                            finish: op.spiral_finish,
+                            spacing: toolOver / 2
+                        })) {
+                            for (let level of rings) {
+                                if (level) outs.push(...level);
+                            }
+                        }
+                    } else {
+                        //actually offset the walls inwards
+                        POLY.offset(clip, offsets, {
+                            count: op.walls ? 1 : (op.steps ?? 999), outs, flat: true, z: z - zMov, ...offopt
+                        });
+                    }
                     // if we see no offsets, re-check the mesh bottom Z then exit
                     if (outs.length === 0) {
                         if (op.flat_mask) {
@@ -588,6 +619,179 @@ class OpArea extends CamOp {
             }
         }
     }
+}
+
+/**
+ * Resample a closed polygon into `n` points evenly spaced along its
+ * perimeter. The point sequence starts at the polygon point closest to
+ * `start` so that consecutive concentric rings (which are roughly
+ * parallel) line up index-for-index at corresponding angular positions.
+ *
+ * @param {Polygon} poly closed source polygon
+ * @param {number} n number of output points
+ * @param {Point} start alignment reference point
+ * @returns {Point[]} n resampled points
+ */
+function resampleRing(poly, n, start) {
+    let pts = poly.points;
+    let len = pts.length;
+    // rotate the point list to begin at the point nearest `start`
+    let best = 0, bd = Infinity;
+    for (let i = 0; i < len; i++) {
+        let d = pts[i].distTo2D(start);
+        if (d < bd) {
+            bd = d;
+            best = i;
+        }
+    }
+    let rot = [];
+    for (let i = 0; i < len; i++) {
+        rot.push(pts[(best + i) % len]);
+    }
+    // cumulative arc lengths over the closed ring
+    let cum = [ 0 ];
+    for (let i = 0; i < len; i++) {
+        cum.push(cum[i] + rot[i].distTo2D(rot[(i + 1) % len]));
+    }
+    let total = cum[len];
+    let out = [];
+    let seg = 0;
+    for (let k = 0; k < n; k++) {
+        let target = (total * k) / n;
+        while (seg < len - 1 && cum[seg + 1] < target) seg++;
+        let a = rot[seg];
+        let b = rot[(seg + 1) % len];
+        let seglen = (cum[seg + 1] - cum[seg]) || 1e-9;
+        let t = (target - cum[seg]) / seglen;
+        out.push(newPoint(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            a.z + (b.z - a.z) * t
+        ));
+    }
+    return out;
+}
+
+/**
+ * Stitch consecutive concentric offset rings into a single continuous
+ * open "morphing spiral" polyline.
+ *
+ * The first revolution lies exactly on the outermost ring (a full pass
+ * along the wall allowance contour before any inward offset begins).
+ * Each subsequent revolution starts on the previous ring and smoothly
+ * morphs onto the next ring over the final `blend` fraction of the
+ * revolution (smoothstep easing), so ring-to-ring transitions become a
+ * continuous radial ramp with no discrete radial moves or ~90 degree
+ * direction reversals. A final full revolution on the innermost ring
+ * clears the center, and an optional full closed ring along the wall
+ * allowance contour can be appended for wall finishing.
+ *
+ * For non-circular pockets (rectangles, arbitrary shapes) corners are
+ * softened by the morph but not eliminated — an accepted trade-off of
+ * this strategy.
+ *
+ * The stitch is skipped (returns false, `outs` untouched) when the ring
+ * set is not a simple one-loop-per-offset progression: multiple
+ * disjoint regions at any offset depth, islands/holes (inners), open or
+ * degenerate rings, or fewer than two rings. The caller then falls back
+ * to the discrete ring output.
+ *
+ * @param {Polygon[][]} rings one entry per offset depth (outermost/wall
+ *   ring first), each holding the polygons generated at that depth
+ * @param {Object} opts
+ * @param {Polygon[]} opts.outs output collector for generated polys
+ * @param {number} opts.spacing resample spacing (stepover / 2)
+ * @param {boolean} [opts.finish] append a full closed finish ring along
+ *   the wall allowance contour (default true)
+ * @param {number} [opts.blend] fraction of a revolution over which the
+ *   morph to the next ring happens (default 0.25)
+ * @returns {boolean} true when a spiral was generated
+ */
+function stitchSpiral(rings, opts) {
+    const outs = opts.outs;
+    const spacing = opts.spacing > 0 ? opts.spacing : 0.1;
+    const blend = opts.blend ?? 0.25;
+    const finish = opts.finish !== false;
+
+    // require one simple closed loop per offset depth and at least
+    // two rings (a single ring gains nothing from stitching)
+    if (!rings || rings.length < 2) {
+        return false;
+    }
+    let loops = [];
+    for (let level of rings) {
+        if (!level || level.length !== 1) {
+            return false;
+        }
+        let poly = level[0];
+        if (poly.open || poly.inner || poly.length < 4) {
+            return false;
+        }
+        loops.push(poly);
+    }
+
+    // resample every ring to a common point count, each starting at the
+    // point closest to the previous ring's start so index i tracks the
+    // same angular position on every ring
+    let n = 16;
+    for (let loop of loops) {
+        n = Math.max(n, Math.ceil(loop.perimeter() / spacing));
+    }
+    n = Math.min(n, 4096);
+    let res = [];
+    let start = loops[0].first();
+    for (let loop of loops) {
+        let r = resampleRing(loop, n, start);
+        res.push(r);
+        start = r[0];
+    }
+
+    let spiral = newPolygon().setOpen();
+    let push = (a, b, w) => {
+        let p = newPoint(
+            a.x + (b.x - a.x) * w,
+            a.y + (b.y - a.y) * w,
+            a.z + (b.z - a.z) * w
+        );
+        // drop near-duplicate points from degenerate blends
+        let last = spiral.last();
+        if (!last || last.distTo2D(p) > 0.001) {
+            spiral.push(p);
+        }
+    };
+    let last = loops.length - 1;
+    // revolution 0: full pass along the outermost (wall) ring
+    for (let p of res[0]) {
+        push(p, p, 0);
+    }
+    // revolutions 1..last: ride ring i-1, morph onto ring i over the
+    // final `blend` fraction of the revolution
+    for (let i = 1; i <= last; i++) {
+        let prev = res[i - 1];
+        let cur = res[i];
+        for (let k = 0; k < n; k++) {
+            let u = k / n;
+            let w = u <= (1 - blend) ? 0 : (u - (1 - blend)) / blend;
+            w = w * w * (3 - 2 * w); // smoothstep
+            push(prev[k], cur[k], w);
+        }
+    }
+    // final full revolution on the innermost ring clears the center
+    for (let p of res[last]) {
+        push(p, p, 0);
+    }
+
+    if (spiral.length < 4) {
+        return false;
+    }
+
+    // spiral is appended first; the optional full closed finish ring
+    // along the wall allowance contour trails it as a separate pass
+    outs.push(spiral);
+    if (finish) {
+        outs.push(loops[0].clone(true).setClosed());
+    }
+    return true;
 }
 
 function omitOuter(polys) {
