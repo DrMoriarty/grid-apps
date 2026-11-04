@@ -295,6 +295,14 @@ const funcs = self.minion = {
         });
     },
 
+    trace_r(data, seq) {
+        const { trace } = cache.trace;
+        trace.crossR_sync(data.params, slice => {
+            slice = codec.encode(slice);
+            reply({ seq, slice });
+        });
+    },
+
     trace_cleanup() {
         delete cache.trace;
     },

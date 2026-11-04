@@ -95,7 +95,8 @@ const LISTS = {
     xyaxis: [
         { name: "X" },
         { name: "Y" },
-        { name: "merged" }
+        { name: "merged" },
+        { name: "radial" }
     ],
     regaxis: [
         { name: "X" },

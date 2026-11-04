@@ -415,6 +415,7 @@ export function createPopOps() {
         clipto: 'camStockClipTo',
         filter: 'camContourFilter',
         axis: 'X',
+        astep: 2.5,
         ov_topz: 0,
         ov_botz: 0,
     }).inputs = {
@@ -428,6 +429,7 @@ export function createPopOps() {
         leave: UC.newInput(LANG.cf_leav_s, { title: LANG.cf_leav_l, convert: toFloat, bound: UC.bound(0, 100) }),
         sep: UC.newBlank({ class: "pop-sep" }),
         angle: UC.newInput(LANG.cf_angl_s, { title: LANG.cf_angl_l, convert: toFloat, bound: UC.bound(45, 90), show: (op) => op.inputs.curves.checked }),
+        astep: UC.newInput(LANG.cf_aste_s, { title: LANG.cf_aste_l, convert: toFloat, bound: UC.bound(0.1, 90), units: false, show: () => env.poppedRec.axis === "radial" }),
         flatness: UC.newInput(LANG.ou_flat_s, { title: LANG.ou_flat_l, convert: toFloat, bound: UC.bound(0, 1.0), units: false, round: 4 }),
         tolerance: UC.newInput(LANG.ou_toll_s, { title: LANG.ou_toll_l, convert: toFloat, bound: UC.bound(0, 10.0), units, round: 4 }),
         reduction: UC.newInput(LANG.ou_redu_s, { title: LANG.ou_redu_l, convert: toInt, bound: UC.bound(0, 10), units: false }),

@@ -26,6 +26,7 @@ export class Topo {
             contourX = axis === "x",
             contourY = axis === "y",
             contourM = axis === "merged",
+            contourR = axis === "radial",
             bounds = widget.getBoundingBox().clone(),
             tolerance = contour.tolerance,
             flatness = contour.flatness || (tolerance / 100),
@@ -49,7 +50,11 @@ export class Topo {
             toolStep = toolDiameter * contour.step,
             leave = contour.leave || 0,
             maxangle = contour.angle,
-            curvesOnly = contour.curves,
+            // curvesOnly decimation is axis-bound (push_point tests slope
+            // against the x or y delta and drops polylines shorter than a
+            // tool step) and cannot follow diagonal radial rays, so it is
+            // disabled for radial; the axis-bound decimation is not reworked
+            curvesOnly = contourR ? false : contour.curves,
             bridge = contour.bridging || 0,
             stepsX = Math.ceil(boundsX / resolution),
             stepsY = Math.ceil(boundsY / resolution),
@@ -89,6 +94,27 @@ export class Topo {
             clipTo.push(newPolygon().centerRectangle(center, x, y));
         }
 
+        // radial ("fan") contouring: a set of vertical secant planes all
+        // passing through the stock center (same origin convention as
+        // clip-to-stock above), rotated by angleStep degrees. the heightmap
+        // below is direction-independent and is shared by every ray.
+        const rCenter = settings.stock.center;
+        // rays span from an inner start radius to maxR + partOff. default
+        // inner radius = tool radius to avoid center crowding where all
+        // rays converge; optionally 0 via op param `rinside`
+        const rInner = contour.rinside !== undefined ? contour.rinside : toolDiameter / 2;
+        // farthest widget corner from the fan center (+ partOff, same
+        // expansion as X/Y modes)
+        const rMax = Math.max(
+            Math.hypot(rCenter.x - minX, rCenter.y - minY),
+            Math.hypot(rCenter.x - maxX, rCenter.y - minY),
+            Math.hypot(rCenter.x - minX, rCenter.y - maxY),
+            Math.hypot(rCenter.x - maxX, rCenter.y - maxY)
+        );
+        // angular step in degrees between adjacent rays
+        const angleStep = (contour.astep > 0.01 && contour.astep <= 90)
+            ? contour.astep : 2.5;
+
         if (tolerance === 0 && !topoCache) {
             console.log(widget.id, 'topo auto tolerance', resolution.round(4));
         }
@@ -114,7 +140,9 @@ export class Topo {
             newslices.push(debug);
         }
 
-        if (webGPU && !contour.nogpu && !contourM) {
+        // webGPU raster only supports axis-aligned scanlines: skip for
+        // merged (existing) and radial (fan of secant rays) contouring
+        if (webGPU && !contour.nogpu && !contourM && !contourR) {
             // invert tool Z offset for gpu code
             let toolBounds = new THREE.Box3()
                 .expandByPoint({ x: -toolDiameter/2, y: -toolDiameter/2, z: 0 })
@@ -403,6 +431,11 @@ export class Topo {
             contourX,
             contourY,
             contourM,
+            contourR,
+            center: { x: rCenter.x, y: rCenter.y },
+            rInner,
+            rMax,
+            angleStep,
             density,
             clipTo,
             clipTab,
@@ -535,8 +568,9 @@ export class Topo {
         const concurrent = self.kiri_worker.minions.running;
 
         const { minX, maxX, minY, maxY, boundsX, boundsY, stepsX, stepsY } = params;
-        const { gridDelta, resolution, density, partOff, toolStep, contourX, contourY, contourM } = params;
+        const { gridDelta, resolution, density, partOff, toolStep, contourX, contourY, contourM, contourR } = params;
         const { clipTo, clipTab, clipTabZ, tabHeight, newslices, leave } = params;
+        const { center, rInner, rMax, angleStep } = params;
 
         let stepsTaken = 0,
             stepsTotal = 0;
@@ -552,6 +586,11 @@ export class Topo {
         // merged runs BOTH families (rows + columns): count the row family too
         if (contourM) {
             stepsTotal += ((maxY - minY + partOff * 2) / toolStep) | 0;
+        }
+
+        // radial counts rays (one trace per angular step)
+        if (contourR) {
+            stepsTotal += Math.ceil(360 / angleStep);
         }
 
         if (stepsTotal === 0) {
@@ -589,13 +628,17 @@ export class Topo {
         let pcount = 0;
         let slicesY = [];
         let slicesX = [];
+        let slicesR = [];
         let promise = new Promise(resolve => {
             resolver = () => {
                 // sort output slices (required for async)
                 slicesY.sort((a, b) => a.z - b.z);
                 slicesX.sort((a, b) => a.z - b.z);
+                // radial slices carry the ray angle in z
+                slicesR.sort((a, b) => a.z - b.z);
                 newslices.appendAll(slicesY);
                 newslices.appendAll(slicesX);
+                newslices.appendAll(slicesR);
                 resolve();
             }
         });
@@ -670,6 +713,40 @@ export class Topo {
                         slicesY.push(slice);
                     }
                     onupdate(++stepsTaken, stepsTotal, "contour merged");
+                    dec();
+                });
+            }
+        }
+
+        if (contourR) {
+            // radial fan: one trace per vertical secant plane through the
+            // stock center, rotated by angleStep degrees. slice.z = ray
+            // angle (sorts correctly for layer ordering / filter naming).
+            // arc stepover between adjacent rays is angleStep * r and grows
+            // with radius (inherent to radial strategies); the step tightens
+            // toward the center and widens toward the silhouette.
+            onupdate(0, stepsTotal, "contour radial");
+            const nrays = Math.ceil(360 / angleStep);
+            const r0 = rInner;
+            const r1 = rMax + partOff;
+            for (let ri = 0; ri < nrays; ri++) {
+                const angle = ri * 360 / nrays;
+                const rad = angle * DEG2RAD;
+                inc();
+                trace.crossR({
+                    cx: center.x,
+                    cy: center.y,
+                    cos: Math.cos(rad),
+                    sin: Math.sin(rad),
+                    from: r0,
+                    to: r1
+                }, segments => {
+                    if (segments.length > 0) {
+                        let slice = newSlice(angle);
+                        slice.camLines = segments;
+                        slicesR.push(slice);
+                    }
+                    onupdate(++stepsTaken, stepsTotal, "contour radial");
                     dec();
                 });
             }
@@ -777,6 +854,50 @@ export class Probe {
             return Math.max(mz, zMin);
         }
 
+        // fractional probe for radial tracing: rays walk fractional world
+        // positions which map to fractional heightmap grid coordinates.
+        // chosen approach: bilinear interpolation of the 4 surrounding
+        // grid nodes, applied per tool-profile sample before the max()
+        // convolution (vs. snapping each sample to the nearest integer
+        // node, which staircases the heightmap on diagonal rays)
+        const toolAtZf = this.toolAtZf = function (x, y) {
+            let sx = stepsX,
+                sy = stepsY,
+                xl = sx - 1,
+                yl = sy - 1;
+
+            let gv, i = 0, mz = -Infinity;
+
+            while (i < profile.length) {
+                // tool profile point x, y, and z offsets
+                const tx = profile[i++] + x;
+                const ty = profile[i++] + y;
+                const tz = profile[i++];
+                if (tx < 0 || tx > xl || ty < 0 || ty > yl) {
+                    // if outside max topo steps, use zMin
+                    gv = zMin;
+                } else {
+                    // bilinear over the 4 surrounding grid nodes
+                    const x0 = Math.floor(tx),
+                        y0 = Math.floor(ty),
+                        x1 = Math.min(x0 + 1, xl),
+                        y1 = Math.min(y0 + 1, yl),
+                        fx = tx - x0,
+                        fy = ty - y0,
+                        v00 = data[x0 * sy + y0] || zMin,
+                        v10 = data[x1 * sy + y0] || zMin,
+                        v01 = data[x0 * sy + y1] || zMin,
+                        v11 = data[x1 * sy + y1] || zMin;
+                    gv = (v00 * (1 - fx) + v10 * fx) * (1 - fy)
+                       + (v01 * (1 - fx) + v11 * fx) * fy;
+                }
+                // update the rest
+                mz = Math.max(tz + gv, mz);
+            }
+
+            return Math.max(mz, zMin);
+        }
+
         // export z probe function
         const rx = stepsX / boundsX;
         const ry = stepsX / boundsX;
@@ -858,7 +979,11 @@ export class Trace {
             const sflat = merged ? flatness / 4 : flatness;
 
             if (lastP) {
-                const dl = (x - lastP.x) || (y - lastP.y);
+                // euclidean planar step length. the legacy expression
+                // `(dx || dy)` assumed axis-aligned steps and mis-computed
+                // the slope on diagonal radial rays. for axis-aligned paths
+                // one delta is always exactly 0, so hypot is identical.
+                const dl = Math.hypot(x - lastP.x, y - lastP.y);
                 const dz = z - lastP.z;
                 const slope = Math.atan2(dz, dl);
                 if (curvesOnly && Math.abs(dz) < flatness) {
@@ -1169,6 +1294,74 @@ export class Trace {
                 push_point(x, py, tv + leave);
                 gridy += density;
             }
+        }
+        end_poly();
+        then(this.slice);
+    }
+
+    crossR(params, then) {
+        const { minions } = self.kiri_worker;
+
+        if (minions && this.cross.concurrent) {
+            minions.queue({
+                cmd: "trace_r",
+                params
+            }, data => {
+                then(codec.decode(data.slice));
+            });
+        } else {
+            this.crossR_sync(params, then);
+        }
+    }
+
+    // radial contouring: trace one vertical secant ray of the fan. params
+    // carry the fan center (cx,cy = stock center), the ray's unit direction
+    // (cos/sin of its angle) and the radial span [from,to]. unlike
+    // crossX/Y_sync which step on exact integer grid vertices, rays walk
+    // fractional world positions, so the fractional probe toolAtZf (bilinear
+    // over the heightmap) is used. per-point tab clamping, clip-to segment
+    // breaking and point pushing mirror crossX/Y_sync verbatim.
+    crossR_sync(params, then) {
+        const { push_point, end_poly, newtrace, newslice, inClip } = this.object;
+        const { clipTab, tabHeight, clipTo, box, resolution, density, leave } = this.cross;
+        const { minX, minY } = this.cross;
+        const { toolAtZf } = this.probe;
+
+        let { cx, cy, cos, sin, from, to } = params;
+
+        const step = resolution * density;
+        const checkr = newPoint(0, 0);
+        newslice();
+        newtrace();
+        for (let r = from; r < to; r += step) {
+            const x = cx + r * cos;
+            const y = cy + r * sin;
+            if (x < box.min.x || x > box.max.x || y < box.min.y || y > box.max.y) {
+                continue;
+            }
+            // tool z at this world position via fractional heightmap coords.
+            // the raster writes node (gx,gy) at world (minX + gx*resolution,
+            // minY + gy*resolution), so the exact world->grid map divides by
+            // resolution (the legacy bounds/steps formula carries a half-cell
+            // bias that Math.round callers tolerate; fractional rays do not)
+            let tv = toolAtZf(
+                (x - minX) / resolution,
+                (y - minY) / resolution
+            );
+            checkr.x = x;
+            checkr.y = y;
+            // when tabs are on and this point is inside the
+            // tab polygon, ensure z is at least tabHeight
+            if (clipTab && clipTab.length && tv < tabHeight && inClip(clipTab, tv, checkr)) {
+                tv = this.tabZ;
+            }
+            // if the value is on the floor and inside the clip
+            // poly (usually shadow), end the segment
+            if (clipTo && !inClip(clipTo, undefined, checkr)) {
+                end_poly();
+                continue;
+            }
+            push_point(x, y, tv + leave);
         }
         end_poly();
         then(this.slice);

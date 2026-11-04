@@ -18,6 +18,27 @@ function createFilter(op, origin, axis) {
             const obj = eval(`( ${filterString} )`);
             let box = obj?.box;
             let slice_fn = obj?.slices;
+            // radial slices carry the ray angle (degrees) in slice.z, so the
+            // x/y/z box filter is meaningless there. honor only the slices()
+            // callback and warn so filtering is never silently mis-applied.
+            if (axis === 'radial') {
+                if (box) {
+                    console.log('contour radial: layer filter box unsupported (slice.z is the ray angle in degrees); ignoring box');
+                }
+                if (slice_fn) {
+                    let index = 0;
+                    filter = function (slices) {
+                        const accept = [];
+                        for (let slice of slices.filter(s => s.camLines)) {
+                            if (slice_fn(slice, index++)) {
+                                accept.push(slice);
+                            }
+                        }
+                        return accept;
+                    };
+                }
+                return filter;
+            }
             let index = 0;
             const accept = [];
             filter = function (slices) {
