@@ -201,16 +201,9 @@ function renderPath(send) {
         }
         const dx = np.x - lp.x, dy = np.y - lp.y, dz = np.z - lp.z;
         const dist = Math.sqrt(dx*dx  + dy*dy + dz*dz);
-        renderDist += dist;
-
-        // skip moves that are less than grid resolution
-        if (renderDist < rezstep) {
-            renderPath(send);
-            return;
-        }
-
         const md = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
-        const st = Math.ceil(md / rezstep);
+        const st = Math.max(1, Math.ceil(md / rezstep));
+        const sl = dist / st;
         const mx = dx / st, my = dy / st, mz = dz / st;
         const moves = [];
         for (let i=0, x=lp.x, y=lp.y, z=lp.z; i<st; i++) {
@@ -220,7 +213,7 @@ function renderPath(send) {
             z += mz;
         }
         moves.push(next.point);
-        renderMoves(id, moves, send);
+        renderMoves(id, moves, sl, send);
     } else {
         last = next;
         if (tool) {
@@ -231,7 +224,7 @@ function renderPath(send) {
     }
 }
 
-function renderMoves(id, moves, send, seed = 0) {
+function renderMoves(id, moves, seglen, send, seed = 0) {
     for (let index = seed; index<moves.length; index++) {
         const pos = moves[index];
         if (!pos) {
@@ -240,12 +233,14 @@ function renderMoves(id, moves, send, seed = 0) {
         tool.pos = pos;
         deformMesh(pos, send);
         toolUpdate = { mesh_move: { id, pos }};
+        // accumulate travel distance per substep and
         // pause renderer at specified offsets
+        renderDist += seglen;
         if ((renderSpeed && renderDist >= renderSpeed) || (depth > 600)) {
             renderDist = depth = 0;
             renderUpdate(send);
             setTimeout(() => {
-                renderMoves(id, moves, send, index);
+                renderMoves(id, moves, seglen, send, index + 1);
             }, renderPause);
             return;
         }
