@@ -220,6 +220,18 @@ const opAddArea = () => {
     opAdd(rec);
 };
 
+const opAddSpiralFinish = () => {
+    traceDone();
+    surfaceDone();
+    let rec = env.popOp.area.new();
+    rec.mode = 'surface';
+    rec.sr_type = 'spiral';
+    rec.areas = { /* widget.id: [ polygons... ] */ };
+    rec.surfaces = { /* widget.id: [ faces... ] */ };
+    rec.note = '#spiral finish';
+    opAdd(rec);
+};
+
 const opAddContour = (axis) => {
     let rec = env.popOp.contour.new();
     rec.axis = axis.toUpperCase();
@@ -840,6 +852,7 @@ export function init() {
             case "pocket": return opAddPocket();
             case "helical": return opAddHelical();
             case "area": return opAddArea();
+            case "spiral finish": return opAddSpiralFinish();
             case "flip":
                 // only one flip op permitted
                 for (let op of env.current.process.ops) {
