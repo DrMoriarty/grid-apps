@@ -197,6 +197,24 @@ class OpArea extends CamOp {
                     } else {
                         POLY.subtract([ area ], shadow, clip, undefined, undefined, 0);
                     }
+                    // remove regions already cleared by a prior roughing pass
+                    // (rough "flats" mode) so we don't raster through air
+                    if (op.flat_mask) {
+                        let cleared = op.flat_mask[z] ?? [];
+                        if (cleared.length) {
+                            let reduced = [];
+                            POLY.subtract(clip, cleared, reduced, undefined, undefined, 0);
+                            clip = reduced;
+                        }
+                        if (!clip.length) {
+                            // plane fully cleared by roughing: skip to the next
+                            zroc += zinc;
+                            lzo = z;
+                            progress(proc + (pinc * zroc), 'clear');
+                            if (z === zs.peek()) break outer;
+                            continue;
+                        }
+                    }
                     //generate offsets to use
                     let offsets = [ firstOff ];
                     //if we need a finish cut, add it
@@ -212,6 +230,15 @@ class OpArea extends CamOp {
                     });
                     // if we see no offsets, re-check the mesh bottom Z then exit
                     if (outs.length === 0) {
+                        if (op.flat_mask) {
+                            // flats pass: nothing left to cut at this plane,
+                            // move on to the next instead of terminating
+                            zroc += zinc;
+                            lzo = z;
+                            progress(proc + (pinc * zroc), 'clear');
+                            if (z === zs.peek()) break outer;
+                            continue;
+                        }
                         if (bounds && lzo > bounds.min.z) {
                             // try a bottom layer matching bottom of selection
                             zs = [ bounds.min.z ];
@@ -707,4 +734,4 @@ function scanBoxAtAngle(box2, angle, step) {
     return rays;
 }
 
-export { OpArea };
+export { OpArea, omitMatching };
