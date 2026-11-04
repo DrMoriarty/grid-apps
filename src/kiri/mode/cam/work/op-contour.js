@@ -31,8 +31,14 @@ function createFilter(op, origin, axis) {
                         x = x ?? [ -Infinity, Infinity ];
                         y = y ?? [ -Infinity, Infinity ];
                         z = z ?? [ -Infinity, Infinity ];
+                        // merged ops carry both orientations in one op:
+                        // rows (mergedDir 'x') test the y box, columns
+                        // (mergedDir 'y') test the x box
+                        const effAxis = axis === 'merged'
+                            ? (slice.mergedDir === 'x' ? 'x' : 'y')
+                            : axis;
                         let ok = false;
-                        if (axis === 'x') {
+                        if (effAxis === 'x') {
                             let sy = slice.z + origin.y;
                             if (sy >= y[0] && sy <= y[1]) {
                                 ok = true;
