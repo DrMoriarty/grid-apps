@@ -21,7 +21,9 @@ let meshes = {},
     color = 0,
     dark = false,
     manifold = false,
-    A2R = Math.PI / 180;
+    A2R = Math.PI / 180,
+    // widget color/opacity before animate_setup2 modified them (Map: widget -> {color, opacity})
+    savedViz = null;
 
 export function animate_clear2(api) {
     let { anim } = api.ui;
@@ -32,6 +34,19 @@ export function animate_clear2(api) {
     api.uc.setVisible(anim.vala, true);
     anim.vala.value = "0.0";
     client.animate_cleanup2();
+    // restore widget color/opacity changed by animate_setup2;
+    // setOpacity also restores material visibility (hidden by toggleModel)
+    if (savedViz) {
+        api.widgets.all().forEach(w => {
+            const viz = savedViz.get(w);
+            if (viz) {
+                w.setColor(viz.color);
+                w.setOpacity(viz.opacity);
+            }
+        });
+        savedViz = null;
+    }
+    space.update();
 }
 
 export function animate2(api, delay) {
@@ -111,6 +126,14 @@ Object.assign(client, {
             color: 0x888888,
             side: THREE.DoubleSide
         });
+        // snapshot pre-animation visual state once, restored in animate_clear2
+        if (!savedViz) {
+            savedViz = new Map();
+            api.widgets.all().forEach(w => savedViz.set(w, {
+                color: w.color ?? w.getMaterial().color.getHex(),
+                opacity: w.getMaterial().opacity
+            }));
+        }
         api.widgets.setColor(0x0055aa);
         api.widgets.setOpacity(0.5);
         client.send("animate_setup2", { settings }, ondone);
