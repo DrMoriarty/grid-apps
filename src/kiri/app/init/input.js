@@ -446,6 +446,7 @@ export function init_input() {
         [ 'lset-pt', 'pt-pt' ],
         [ 'lset-es', 'es-es' ],
         [ 'lset-zh', 'zh' ],
+        [ 'lset-ru', 'ru-ru' ],
     ]
     for (let [ btn, lang ] of lang_map) {
         $(btn).onclick = () => {
