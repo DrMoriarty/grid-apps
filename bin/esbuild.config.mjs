@@ -1,7 +1,34 @@
 import { build, transform } from 'esbuild';
 import fs from 'fs/promises';
+import { existsSync, rmSync, symlinkSync } from 'fs';
 import path from 'path';
 import glob from 'fast-glob';
+
+// Worktrees (e.g. .drcode/worktrees/*) get no node_modules of their own, while
+// src/ext/*.js are relative symlinks into ../../node_modules. Link the nearest
+// ancestor node_modules so bundling works from nested checkouts.
+function ensureNodeModules() {
+    const cwd = process.cwd();
+    if (existsSync(path.join(cwd, 'node_modules'))) return;
+    let dir = path.dirname(cwd);
+    while (dir !== path.parse(dir).root) {
+        const nm = path.join(dir, 'node_modules');
+        if (existsSync(nm)) {
+            const link = path.join(cwd, 'node_modules');
+            rmSync(link, { force: true });
+            try {
+                symlinkSync(nm, link, 'dir');
+                console.log(`linked node_modules -> ${nm}`);
+            } catch (e) {
+                console.warn(`could not link node_modules: ${e.message}`);
+            }
+            return;
+        }
+        dir = path.dirname(dir);
+    }
+    console.warn('no ancestor node_modules found; src/ext symlinks may not resolve');
+}
+ensureNodeModules();
 
 // Get build mode from command line argument
 const mode = process.argv[2] || 'dev';
