@@ -468,16 +468,19 @@ class OpArea extends CamOp {
                 // convert terrain raster output back to open polylines
                 // todo: add leave_z support
                 for (let path of output.paths) {
-                    path = newPolygon().fromArray([1, ...path]);
-                    // clamp terrain-following output to the operation's z bottom
-                    clampZ(path, Infinity, zBottom);
-                    if (op.refine) path.refine(op.refine);
-                    surface.push(path);
-                    let slice = newLayer();
-                    slice.camLines = [ path ];
-                    slice.output()
-                        .setLayer(rename ?? "linear", { line: color }, false)
-                        .addPolys([ path ]);
+                    // split terrain-following output at the operation's z
+                    // bottom, dropping segments that dip below it instead of
+                    // clamping them flat onto the z bottom plane
+                    let parts = dropBelowZ(newPolygon().fromArray([1, ...path]), zBottom);
+                    for (let part of parts) {
+                        if (op.refine) part.refine(op.refine);
+                        surface.push(part);
+                        let slice = newLayer();
+                        slice.camLines = [ part ];
+                        slice.output()
+                            .setLayer(rename ?? "linear", { line: color }, false)
+                            .addPolys([ part ]);
+                    }
                 }
 
                 // output this surface
@@ -588,6 +591,56 @@ function omitMatching(target, matches) {
         });
     }
     return target;
+}
+
+/**
+ * Split an open polyline where it crosses below a z plane. Segments at or
+ * above `zmin` are kept, with interpolated points inserted where the path
+ * crosses the plane. Portions strictly below `zmin` are dropped. Returns
+ * an array of open polylines (possibly empty).
+ */
+function dropBelowZ(poly, zmin) {
+    let outs = [];
+    let points = poly.points;
+    let cur = null;
+    let add = (p) => {
+        if (!cur) {
+            cur = newPolygon().setOpen();
+            outs.push(cur);
+        }
+        cur.push(p);
+    };
+    // interpolate the point where a segment crosses the zmin plane
+    let cross = (q, p) => {
+        let t = (zmin - q.z) / (p.z - q.z);
+        return newPoint(
+            q.x + t * (p.x - q.x),
+            q.y + t * (p.y - q.y),
+            zmin
+        );
+    };
+    for (let i = 0; i < points.length; i++) {
+        let p = points[i];
+        if (p.z >= zmin) {
+            // entering the kept region from below: start at the crossing
+            if (cur === null && i > 0) {
+                let q = points[i - 1];
+                if (q.z < zmin && p.z > zmin) {
+                    add(cross(q, p));
+                }
+            }
+            add(p);
+        } else if (cur !== null) {
+            // leaving the kept region: end at the crossing
+            let q = points[i - 1];
+            if (q.z > zmin) {
+                cur.push(cross(q, p));
+            }
+            cur = null;
+        }
+    }
+    // discard degenerate single-point fragments (touch-and-dip)
+    return outs.filter(p => p.length > 1);
 }
 
 function clampZ(poly, max, min) {
