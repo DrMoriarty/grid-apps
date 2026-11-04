@@ -33,6 +33,9 @@ export function animate_clear(api) {
     toggleStock(undefined,true,false);
     api.uc.setVisible(anim.laba, false);
     api.uc.setVisible(anim.vala, false);
+    // restore widget visibility hidden during animation (toggleModel)
+    api.widgets.all().forEach(w => w.toggleVisibility(true));
+    space.update();
 }
 
 export function animate(api, delay) {
