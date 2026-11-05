@@ -229,9 +229,13 @@ class OpArea extends CamOp {
                     // as discrete closed rings. this removes the radial
                     // ring-to-ring transition moves (two ~90 degree turns
                     // each) that make machines stop and shed inertia.
+                    // tabs do not disable the spiral: they are a local z
+                    // lift applied after the fact via cutTabs() below,
+                    // which splits the open spiral polyline over each tab
+                    // zone just like it splits the discrete rings
                     // falls back to the discrete rings below when the
                     // geometry does not support a spiral for this area
-                    let doSpiral = op.spiral && !op.walls && !op.omitouter && !tabs.length;
+                    let doSpiral = op.spiral && !op.walls && !op.omitouter;
                     if (doSpiral) {
                         // collect rings per offset depth via the collector.
                         // the offset accumulator is a throwaway: rings must
