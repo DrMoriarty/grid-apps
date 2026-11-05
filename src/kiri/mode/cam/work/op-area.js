@@ -700,8 +700,10 @@ function resampleRing(poly, n, start) {
  * The first revolution lies exactly on the outermost ring (a full pass
  * along the wall allowance contour before any inward offset begins).
  * Each subsequent revolution starts on the previous ring and smoothly
- * morphs onto the next ring over the final `blend` fraction of the
- * revolution (smoothstep easing), so ring-to-ring transitions become a
+ * morphs onto the next ring (smoothstep easing) — the first transition
+ * spans the ENTIRE revolution so the outermost ring is not re-traced
+ * after its full pass, later transitions morph over the final `blend`
+ * fraction of the revolution — so ring-to-ring transitions become a
  * continuous radial ramp with no discrete radial moves or ~90 degree
  * direction reversals. A final full revolution on the innermost ring
  * clears the center, and an optional full closed ring along the wall
@@ -754,12 +756,17 @@ function resampleRing(poly, n, start) {
  *   revolution of the spiral (default true)
  * @param {number} [opts.blend] fraction of a revolution over which the
  *   morph to the next ring happens (default 0.25)
+ * @param {number} [opts.first_blend] fraction of revolution 1 used to
+ *   morph ring 0 -> ring 1; 1 spans the entire revolution so the
+ *   outermost ring is cut exactly once before spiraling inward
+ *   (default 1)
  * @returns {boolean} true when a spiral was generated
  */
 function stitchSpiral(rings, opts) {
     const outs = opts.outs;
     const spacing = opts.spacing > 0 ? opts.spacing : 0.1;
     const blend = opts.blend ?? 0.25;
+    const first_blend = opts.first_blend ?? 1;
     const finish = opts.finish !== false;
 
     // require at least two rings (a single ring gains nothing from
@@ -819,7 +826,7 @@ function stitchSpiral(rings, opts) {
     let result = [];
     let spiraled = false;
     for (let region of regions) {
-        let stitched = stitchRegion(region, { spacing, blend });
+        let stitched = stitchRegion(region, { spacing, blend, first_blend });
         if (stitched) {
             spiraled = true;
             result.push(stitched.spiral);
@@ -863,6 +870,8 @@ function stitchSpiral(rings, opts) {
  * @param {Object} opts
  * @param {number} opts.spacing resample spacing (stepover / 2)
  * @param {number} opts.blend fraction of a revolution used to morph
+ * @param {number} [opts.first_blend] fraction of revolution 1 used to
+ *   morph ring 0 -> ring 1 (default 1 = whole revolution)
  * @returns {{ spiral: Polygon, wall: Polygon, loop: Polygon,
  *            remainder: Polygon[], finish_dup: boolean } | null}
  *   `finish_dup` is true when the caller's finish ring candidate
@@ -877,6 +886,7 @@ function stitchSpiral(rings, opts) {
 function stitchRegion(levels, opts) {
     const spacing = opts.spacing;
     const blend = opts.blend;
+    const firstBlend = opts.first_blend ?? 1;
 
     // collect the cutting loops of every offset depth: a level without
     // holes contributes its single outer loop (pocket style); a level
@@ -985,14 +995,20 @@ function stitchRegion(levels, opts) {
     for (let p of res[0]) {
         push(p, p, 0);
     }
-    // revolutions 1..last: ride ring i-1, morph onto ring i over the
-    // final `blend` fraction of the revolution
+    // revolutions 1..last: ride ring i-1, morph onto ring i. the first
+    // transition (ring 0 -> ring 1) morphs across the ENTIRE revolution
+    // (`firstBlend`): revolution 0 already gives the outermost ring its
+    // full pass, so riding it for another (1 - blend) fraction before
+    // any inward motion would only re-trace an already-cut contour.
+    // later transitions keep the configured blend so each intermediate
+    // ring still receives most of a full cutting revolution.
     for (let i = 1; i <= last; i++) {
         let prev = res[i - 1];
         let cur = res[i];
+        let bl = i === 1 ? firstBlend : blend;
         for (let k = 0; k < n; k++) {
             let u = k / n;
-            let w = u <= (1 - blend) ? 0 : (u - (1 - blend)) / blend;
+            let w = u <= (1 - bl) ? 0 : (u - (1 - bl)) / bl;
             w = w * w * (3 - 2 * w); // smoothstep
             push(prev[k], cur[k], w);
         }
