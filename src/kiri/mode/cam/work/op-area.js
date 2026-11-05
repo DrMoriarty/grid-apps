@@ -691,10 +691,20 @@ function resampleRing(poly, n, start) {
  * this strategy.
  *
  * The stitch is skipped (returns false, `outs` untouched) when the ring
- * set is not a simple one-loop-per-offset progression: multiple
- * disjoint regions at any offset depth, islands/holes (inners), open or
- * degenerate rings, or fewer than two rings. The caller then falls back
- * to the discrete ring output.
+ * set is not a simple progression of loops: multiple disjoint regions at
+ * any offset depth, more than one hole in any ring, open or degenerate
+ * rings, or fewer than two rings. The caller then falls back to the
+ * discrete ring output.
+ *
+ * Rings may carry a single hole (`.inner`), which is how offset levels
+ * of an annulus look — roughing clears the region between the area
+ * boundary and the part shadow, so every level yields the receding outer
+ * boundary plus the contour hugging the part. Both are cutting loops on
+ * that depth. Sorted by size, the combined loops of all levels form one
+ * monotone progression from the outer boundary inward to the part wall:
+ * the spiral starts with a full revolution on the outermost loop, morphs
+ * through the intermediate contours and ends with a full revolution
+ * around the part wall, where the optional finish ring is appended.
  *
  * @param {Polygon[][]} rings one entry per offset depth (outermost/wall
  *   ring first), each holding the polygons generated at that depth
@@ -713,21 +723,56 @@ function stitchSpiral(rings, opts) {
     const blend = opts.blend ?? 0.25;
     const finish = opts.finish !== false;
 
-    // require one simple closed loop per offset depth and at least
-    // two rings (a single ring gains nothing from stitching)
+    // require at least two rings (a single ring gains nothing from
+    // stitching)
     if (!rings || rings.length < 2) {
         return false;
     }
+    // collect the cutting loops of every offset depth: a level without
+    // holes contributes its single outer loop (pocket style); a level
+    // with exactly one hole contributes that hole's contour as well
+    // (annulus / roughing style)
     let loops = [];
+    let wall = null;
     for (let level of rings) {
         if (!level || level.length !== 1) {
             return false;
         }
         let poly = level[0];
-        if (poly.open || poly.inner || poly.length < 4) {
+        if (poly.open || poly.length < 4) {
             return false;
         }
-        loops.push(poly);
+        if (poly.inner) {
+            if (poly.inner.length !== 1) {
+                return false;
+            }
+            let inner = poly.inner[0];
+            if (inner.open || inner.length < 4 || inner.inner) {
+                return false;
+            }
+            // the first (shallowest) level's hole hugs the part wall
+            if (!wall) {
+                wall = inner;
+            }
+            loops.push(poly, inner);
+        } else {
+            loops.push(poly);
+        }
+    }
+    if (wall) {
+        // annulus levels interleave receding outer and growing inner
+        // contours; order the combined loops largest-first so revolutions
+        // progress monotonically from the outer boundary to the part
+        // wall. pocket-style loops are already in this order.
+        loops.sort((a, b) => Math.abs(b.area()) - Math.abs(a.area()));
+    }
+    // the spiral must traverse every loop in the same rotational
+    // direction, so flip any loop running opposite to the first.
+    // clones keep the original rings intact for the caller's fallback
+    for (let i = 1; i < loops.length; i++) {
+        if (loops[i].isClockwise() !== loops[0].isClockwise()) {
+            loops[i] = loops[i].clone(true).reverse();
+        }
     }
 
     // resample every ring to a common point count, each starting at the
@@ -786,10 +831,11 @@ function stitchSpiral(rings, opts) {
     }
 
     // spiral is appended first; the optional full closed finish ring
-    // along the wall allowance contour trails it as a separate pass
+    // along the wall allowance contour (part wall for annulus areas,
+    // pocket wall otherwise) trails it as a separate pass
     outs.push(spiral);
     if (finish) {
-        outs.push(loops[0].clone(true).setClosed());
+        outs.push((wall ?? loops[0]).clone(true).setClosed());
     }
     return true;
 }
