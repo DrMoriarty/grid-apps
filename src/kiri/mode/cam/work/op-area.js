@@ -690,16 +690,26 @@ function resampleRing(poly, n, start) {
  * softened by the morph but not eliminated — an accepted trade-off of
  * this strategy.
  *
- * A level that fragments into multiple disjoint polygons (or grows a
- * second hole) ends the monotone progression rather than failing the
- * stitch: the "good" prefix of levels is spiraled and the polygons of
- * the fragmented level (and all deeper levels) are appended after the
- * spiral as discrete cutting loops. This is the common roughing case
- * where stock corners outlive a receding annulus. The stitch is skipped
- * entirely (returns false, `outs` untouched) only for structurally
- * degenerate ring sets: open or degenerate rings anywhere, or fewer
- * than two loops in the good prefix. The caller then falls back to the
- * discrete ring output.
+ * The clip area may consist of several disjoint regions (eg. roughing a
+ * boss with a central bore: the stock visible through the bore is a
+ * clip island next to the region hugging the part). Regions are seeded
+ * from the polygons of the shallowest non-empty level and every deeper
+ * polygon is assigned to the region whose material contains it (inset
+ * polygons always nest inside their originating region). Each region is
+ * stitched independently into its own spiral.
+ *
+ * Within a region, a level that fragments into multiple disjoint
+ * polygons (or grows a second hole) ends that region's monotone
+ * progression rather than failing the stitch: the "good" prefix of
+ * levels is spiraled and the polygons of the fragmented level (and all
+ * deeper levels) are appended after the region's spiral as discrete
+ * cutting loops. This is the common roughing case where stock corners
+ * outlive a receding annulus. A region with fewer than two loops (eg. a
+ * bore island eroded away by the first offset) emits its rings
+ * discretely. The stitch is skipped entirely (returns false, `outs`
+ * untouched) only when no region produces a spiral, or for structurally
+ * degenerate ring sets: open or degenerate rings anywhere. The caller
+ * then falls back to the discrete ring output.
  *
  * Rings may carry a single hole (`.inner`), which is how offset levels
  * of an annulus look — roughing clears the region between the area
@@ -733,6 +743,101 @@ function stitchSpiral(rings, opts) {
     if (!rings || rings.length < 2) {
         return false;
     }
+    // open or degenerate loops anywhere are a structural failure:
+    // fall back to the legacy discrete emission for the whole set
+    for (let level of rings) {
+        if (!level) continue;
+        for (let poly of level) {
+            if (poly.open || poly.length < 4) {
+                return false;
+            }
+            if (poly.inner) {
+                for (let inner of poly.inner) {
+                    if (inner.open || inner.length < 4 || inner.inner) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    // split the ring set into independent region progressions. the
+    // polygons of the shallowest non-empty level seed one region each;
+    // deeper polygons are assigned to the region whose material (outer
+    // minus holes) contains them, which always holds for inset offsets
+    let seedIdx = rings.findIndex(level => level && level.length);
+    if (seedIdx < 0) {
+        return false;
+    }
+    let seeds = rings[seedIdx];
+    let regions = seeds.map(() => []);
+    for (let i = seedIdx; i < rings.length; i++) {
+        let level = rings[i];
+        for (let r = 0; r < regions.length; r++) {
+            regions[r].push([]);
+        }
+        if (!level || !level.length) {
+            continue;
+        }
+        for (let poly of level) {
+            let region = seeds.findIndex(seed => poly.first().isInPolygon(seed));
+            if (region < 0) {
+                // unclassifiable geometry: full legacy fallback
+                return false;
+            }
+            regions[region][i - seedIdx].push(poly);
+        }
+    }
+
+    // stitch each region's progression; regions that cannot produce a
+    // spiral (too few loops, degenerate geometry) emit their rings
+    // discretely
+    let result = [];
+    let spiraled = false;
+    for (let region of regions) {
+        let stitched = stitchRegion(region, { spacing, blend });
+        if (stitched) {
+            spiraled = true;
+            result.push(stitched.spiral);
+            if (finish) {
+                result.push((stitched.wall ?? stitched.loop).clone(true).setClosed());
+            }
+            if (stitched.remainder.length) {
+                result.push(...stitched.remainder);
+            }
+        } else {
+            for (let level of region) {
+                if (level && level.length) {
+                    result.push(...level);
+                }
+            }
+        }
+    }
+    if (!spiraled) {
+        return false;
+    }
+    outs.push(...result);
+    return true;
+}
+
+/**
+ * Stitch one region's monotone progression of offset levels into a
+ * single morphing spiral. See stitchSpiral() for a description of the
+ * generated path. Returns null when the region yields fewer than two
+ * loops or a degenerate spiral, in which case the caller emits the
+ * region's levels as discrete cutting loops.
+ *
+ * @param {Polygon[][]} levels per-offset-depth polygons of one region
+ * @param {Object} opts
+ * @param {number} opts.spacing resample spacing (stepover / 2)
+ * @param {number} opts.blend fraction of a revolution used to morph
+ * @returns {{ spiral: Polygon, wall: Polygon, loop: Polygon,
+ *            remainder: Polygon[] } | null}
+ */
+function stitchRegion(levels, opts) {
+    const spacing = opts.spacing;
+    const blend = opts.blend;
+
     // collect the cutting loops of every offset depth: a level without
     // holes contributes its single outer loop (pocket style); a level
     // with exactly one hole contributes that hole's contour as well
@@ -745,26 +850,12 @@ function stitchSpiral(rings, opts) {
     let wall = null;
     let remainder = [];
     let split = false;
-    for (let level of rings) {
+    for (let level of levels) {
         if (!level || !level.length) {
             // no geometry at this depth: the progression (if any) ends
             // here; deeper levels, if any, clear discretely
             split = true;
             continue;
-        }
-        // open or degenerate loops anywhere are a structural failure:
-        // fall back to the legacy discrete emission for the whole set
-        for (let poly of level) {
-            if (poly.open || poly.length < 4) {
-                return false;
-            }
-            if (poly.inner) {
-                for (let inner of poly.inner) {
-                    if (inner.open || inner.length < 4 || inner.inner) {
-                        return false;
-                    }
-                }
-            }
         }
         if (split) {
             remainder.push(...level);
@@ -796,7 +887,7 @@ function stitchSpiral(rings, opts) {
     }
     // a single loop gains nothing from stitching
     if (loops.length < 2) {
-        return false;
+        return null;
     }
     if (wall) {
         // annulus levels interleave receding outer and growing inner
@@ -866,23 +957,10 @@ function stitchSpiral(rings, opts) {
     }
 
     if (spiral.length < 4) {
-        return false;
+        return null;
     }
 
-    // spiral is appended first; the optional full closed finish ring
-    // along the wall allowance contour (part wall for annulus areas,
-    // pocket wall otherwise) trails it as a separate pass
-    outs.push(spiral);
-    if (finish) {
-        outs.push((wall ?? loops[0]).clone(true).setClosed());
-    }
-    // polygons of fragmented levels (and everything deeper) trail the
-    // spiral as discrete cutting loops — small leftover regions (stock
-    // corners) for which discrete clearing is correct
-    if (remainder.length) {
-        outs.push(...remainder);
-    }
-    return true;
+    return { spiral, wall, loop: loops[0], remainder };
 }
 
 function omitOuter(polys) {
