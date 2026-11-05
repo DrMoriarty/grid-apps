@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Kiri:Moto (loading)</title>
+    <style>
+        body {
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            position: fixed;
+            align-items: center;
+            flex-direction: column;
+            justify-content: center;
+            font-family: sans-serif;
+            font-weight: bold;
+        }
+        #progress {
+            margin-top: 20px;
+            width: 300px;
+            height: 20px;
+            border: 1px solid black;
+            border-radius: 10px;
+            background-color: white;
+            overflow: hidden;
+        }
+        #bar {
+            background-color: #555;
+            height: 20px;
+            width: 0%;
+        }
+    </style>
+    <script type="module">
+        import { version } from '/lib/moto/license.js';
+        (async () => {
+            const reg = await navigator.serviceWorker.register('/boot/service.js', { scope: '/' });
+            await reg.update();
+            await navigator.serviceWorker.ready;
+
+            if (!navigator.serviceWorker.controller) {
+                console.log('No controller → reloading under SW control');
+                location.reload();
+                return;
+            }
+
+            // turn url params into key/value map
+            const map = Object.fromEntries(
+                (location.search || location.hash).slice(1).split('&')
+                .map(v => v.split('='))
+                .map(([k, v = true]) => [k, v])
+            );
+            if (map.debug) {
+                console.log({ map });
+            }
+
+            navigator.serviceWorker.controller.postMessage({
+                mode: map.mode,
+                clear: map.clear,
+                disable: map.disable,
+                version: map.version || version
+            });
+
+            const bar = document.getElementById('bar');
+
+            navigator.serviceWorker.addEventListener('message', e => {
+                let { data } = e;
+                if (data.progress) {
+                    bar.style.width = `${(data.progress * 100)|0}%`;
+                    return;
+                } else {
+                    console.log('[SM]', data);
+                }
+                setTimeout(() => {
+                    bar.style.width = `100%`;
+                    if (map.mesh) {
+                        location.replace('/mesh/index.html');
+                    } else {
+                        location.replace('/kiri/index.html');
+                    }
+                }, map.delay || 10);
+            });
+        })();
+    </script>
+</head>
+
+<body>
+    <div>Installing Grid.Space</div>
+    <div id="progress">
+        <div id="bar"></div>
+    </div>
+</body>
+
+</html>

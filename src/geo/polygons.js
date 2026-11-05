@@ -2,85 +2,103 @@
 
 "use strict";
 
-// dep: geo.base
-// dep: geo.point
-// use: ext.clip2
-// use: geo.slope
-// use: geo.polygon
-gapp.register("geo.polygons", [], (root, exports) => {
+import { base, util, config } from './base.js';
+import { newPoint, pointFromClipper } from './point.js';
+import { newPolygon } from './polygon.js';
+import { newSlope } from './slope.js';
+import { paths } from './paths.js';
+import { ClipperLib } from '../ext/clip2.esm.js';
 
-const { base } = root;
-const { util, paths, config, newPoint } = base;
-const { sqr, numOrDefault } = util;
+const geo = base;
+const { numOrDefault } = util;
 
 const DEG2RAD = Math.PI / 180,
     SQRT = Math.sqrt,
     SQR = util.sqr,
     ABS = Math.abs;
 
-const ClipperLib = self.ClipperLib,
-    Clipper = ClipperLib.Clipper,
-    ClipType = ClipperLib.ClipType,
-    PolyType = ClipperLib.PolyType,
-    PolyFillType = ClipperLib.PolyFillType,
-    CleanPolygon = Clipper.CleanPolygon,
+const {
+    Clipper,
+    ClipType,
+    PolyType,
+    PolyFillType,
+    EndType,
+    JoinType,
+    PolyTree,
+    ClipperOffset
+} = ClipperLib;
+
+const CleanPolygon = Clipper.CleanPolygon,
     CleanPolygons = Clipper.CleanPolygons,
     SimplifyPolygons = Clipper.SimplifyPolygons,
     FillNonZero = PolyFillType.pftNonZero,
     FillEvenOdd = PolyFillType.pftEvenOdd,
     PathSubject = PolyType.ptSubject,
     PathClip = PolyType.ptClip,
-    EndType = ClipperLib.EndType,
-    JoinType = ClipperLib.JoinType,
-    PolyTree = ClipperLib.PolyTree,
     ClipXOR = ClipType.ctXor,
     ClipDiff = ClipType.ctDifference,
     ClipUnion = ClipType.ctUnion,
-    ClipIntersect = ClipType.ctIntersection,
-    ClipperOffset = ClipperLib.ClipperOffset
-    ;
+    ClipIntersect = ClipType.ctIntersection;
 
-const POLYS = base.polygons = {
-    clearInner,
-    rayIntersect,
+const POLYS = {
     alignWindings,
-    setWinding,
-    fillArea,
-    subtract,
-    flatten,
-    offset,
-    trimTo,
-    expand,
-    points,
-    length,
-    renest,
-    route,
-    union,
-    inset,
-    outer,
-    inner,
-    nest,
+    cleanClipperTree,
+    clearInner,
     diff,
-    xor,
-    setZ,
+    expand,
+    fillArea,
     filter,
-    toClipper,
+    fingerprint,
+    fingerprintCompare,
+    flatten,
     fromClipperNode,
     fromClipperTree,
     fromClipperTreeUnion,
-    cleanClipperTree,
-    fingerprintCompare,
-    fingerprint
+    inner,
+    inset,
+    length,
+    nest,
+    offset,
+    outer,
+    points,
+    print,
+    rayIntersect,
+    reconnect,
+    renest,
+    route,
+    setWinding,
+    setZ,
+    subtract,
+    toClipper,
+    trimTo,
+    union,
+    unionFaces,
+    xor,
+    verify
 };
 
-function outer(polys) {
+export { POLYS };
+
+export function verify(polys) {
+    polys.forEach(p => {
+        if (!p.open && p.length < 3) console.trace('SHORT', p);
+        if (!p.open && p.area() < 0.001) console.trace('SMALL', p);
+        p.points.forEach(p => {
+            if (isNaN(p.x) || isNaN(p.y) ||isNaN(p.z)) {
+                console.trace('NaN', p);
+            }
+        });
+    });
+}
+
+export function outer(polys) {
     for (let p of polys) {
         p.inner = undefined;
     }
     return polys;
 }
 
-function inner(polys) {
+export function inner(polys) {
     const ret = [];
     for (let p of polys) {
         if (p.inner) {
@@ -90,7 +108,7 @@ function inner(polys) {
     return ret;
 }
 
-function length(polys) {
+export function length(polys) {
     let length = 0;
     for (let p of polys) {
         length += p.deepLength;
@@ -98,20 +116,20 @@ function length(polys) {
     return length;
 }
 
-function setZ(polys, z) {
+export function setZ(polys, z) {
     for (let poly of polys) {
         poly.setZ(z);
     }
     return polys;
 }
 
-function clearInner(polys) {
+export function clearInner(polys) {
     for (let p of polys) {
         p.clearInner();
     }
 }
 
-function toClipper(polys = []) {
+export function toClipper(polys = []) {
     let out = [];
     for (let poly of polys) {
         poly.toClipper(out);
@@ -119,19 +137,19 @@ function toClipper(polys = []) {
     return out;
 }
 
-function fromClipperNode(tnode, z) {
-    let poly = base.newPolygon();
+export function fromClipperNode(tnode, z) {
+    let poly = newPolygon();
     for (let point of tnode.m_polygon) {
-        poly.push(base.pointFromClipper(point, z));
+        poly.push(pointFromClipper(point, z));
     }
     poly.open = tnode.IsOpen;
     return poly;
-};
+}
 
-function fromClipperTree(tnode, z, tops, parent, minarea) {
+export function fromClipperTree(tnode, z, tops, parent, minarea) {
     let poly,
         polys = tops || [],
-        min = numOrDefault(minarea, 0.1);
+        min = minarea ?? 0.1;
 
     for (let child of tnode.m_Childs) {
         poly = fromClipperNode(child, z);
@@ -145,14 +163,14 @@ function fromClipperTree(tnode, z, tops, parent, minarea) {
             polys.push(poly);
         }
         if (child.m_Childs) {
-            fromClipperTree(child, z, polys, parent ? null : poly, minarea);
+            fromClipperTree(child, z, polys, parent ? null : poly, min);
         }
     }
 
     return polys;
-};
+}
 
-function fromClipperTreeUnion(tnode, z, minarea, tops, parent) {
+export function fromClipperTreeUnion(tnode, z, minarea, tops, parent) {
     let polys = tops || [], poly;
 
     for (let child of tnode.m_Childs) {
@@ -171,9 +189,9 @@ function fromClipperTreeUnion(tnode, z, minarea, tops, parent) {
     }
 
     return polys;
-};
+}
 
-function cleanClipperTree(tree) {
+export function cleanClipperTree(tree) {
     if (tree.m_Childs)
     for (let child of tree.m_Childs) {
         child.m_polygon = CleanPolygon(child.m_polygon, config.clipperClean);
@@ -181,9 +199,9 @@ function cleanClipperTree(tree) {
     }
 
     return tree;
-};
+}
 
-function filter(array, output, fn) {
+export function filter(array, output, fn) {
     for (let poly of array) {
         poly = fn(poly);
         if (poly) {
@@ -197,15 +215,24 @@ function filter(array, output, fn) {
     return output;
 }
 
-function points(polys) {
+export function points(polys) {
     return polys.length ? polys.map(p => p.deepLength).reduce((a,v) => a+v) : 0;
 }
 
 /**
  * redo nesting of polygons that might already have inners
  */
-function renest(polygons, deep) {
+export function renest(polygons, deep) {
     return nest(flatten(polygons, [], true), deep);
+}
+
+export function print(polys, pad = '  ', buf) {
+    buf = buf || [];
+    for (let poly of polys) {
+        buf.push(`${pad} - ${poly.points.length}`);
+        if (poly.inner) print(poly.inner, pad + pad, buf);
+    }
+    return buf;
 }
 
 /**
@@ -220,7 +247,7 @@ function renest(polygons, deep) {
  * @param {boolean} opentop prevent open polygons from having inners
  * @returns {Polygon[]} top level parent polygons
  */
-function nest(polygons, deep, opentop) {
+export function nest(polygons, deep, opentop) {
     if (!polygons) {
         return polygons;
     }
@@ -284,7 +311,7 @@ function nest(polygons, deep, opentop) {
  * @param {boolean} CW
  * @param {boolean} [recurse]
  */
-function setWinding(array, CW, recurse) {
+export function setWinding(array, CW, recurse) {
     if (!array) return;
     let poly, i = 0;
     while (i < array.length) {
@@ -302,7 +329,7 @@ function setWinding(array, CW, recurse) {
  * @param {Polygon[]} polys
  * @return {boolean} true if aligned clockwise
  */
-function alignWindings(polys) {
+export function alignWindings(polys) {
     let len = polys.length,
         fwd = 0,
         pts = 0,
@@ -323,14 +350,14 @@ function alignWindings(polys) {
     return setCW;
 }
 
-function setContains(setA, poly) {
+export function setContains(setA, poly) {
     for (let i=0; i<setA.length; i++) {
         if (setA[i].contains(poly)) return true;
     }
     return false;
 }
 
-function flatten(polys, to, crush) {
+export function flatten(polys, to, crush) {
     to = to || [];
     for (let poly of polys) {
         poly.flattenTo(to);
@@ -351,13 +378,13 @@ function flatten(polys, to, crush) {
  * @param {number} [minArea]
  * @returns {Polygon[]} out
  */
-function subtract(setA, setB, outA, outB, z, minArea, opt = {}) {
+export function subtract(setA, setB, outA, outB, z, minArea, opt = {}) {
     let min = numOrDefault(minArea, 0.1),
         out = [];
 
     function filter(from, to = []) {
         from.forEach(function(poly) {
-            if (poly.area() >= min) {
+            if (poly.area() >= min && poly.length > 2) {
                 to.push(poly);
                 out.push(poly);
             }
@@ -433,63 +460,138 @@ function subtract(setA, setB, outA, outB, z, minArea, opt = {}) {
  * @param {Polygon[]} polys
  * @returns {Polygon[]}
  */
- function union(polys, minarea, all, opt = {}) {
-     if (polys.length < 2) return polys;
-     let lpre = length(polys);
+export function union(polys, minarea, all, opt = {}) {
+    if (polys.length < 2) return polys;
+    let lpre = length(polys);
 
-     if (opt.wasm && geo.wasm) {
-         let min = minarea ?? 0.01;
-         // let deepLength = polys.map(p => p.deepLength).reduce((a,v) => a+v);
-         // if (deepLength < 15000)
-         try {
-             let out = geo.wasm.js.union(polys, polys[0].getZ()).filter(p => p.area() > min);
-             opt.changes = length(out) - lpre;
-             return out;
-         } catch (e) {
-             console.log({union_fail: polys, minarea, all});
-         }
-     }
+    if (opt.wasm && geo.wasm) {
+        try {
+            // console.log({ wasm_union: polys, minarea });
+            if (minarea) polys = polys.filter(p => p.area() >= minarea);
+            let out = geo.wasm.js.union(polys, polys[0].getZ());
+            opt.changes = length(out) - lpre;
+            return out;
+        } catch (e) {
+            console.log({union_fail: polys, minarea, all});
+        }
+    }
 
-     let out = polys.slice(), i, j, union, uset = [], a, b;
+    let out = polys.slice(), i, j, union, uset = [], a, b;
 
-     outer: for (i=0; i<out.length; i++) {
-         if (!out[i]) continue;
-         for (j=i+1; j<out.length; j++) {
-             if (!out[j]) continue;
-             union = out[i].union(out[j], minarea, all);
-             if (union && union.length) {
-                 if (opt.onmerge) {
-                     a = out[i];
-                     b = out[j];
-                 }
-                 out[i] = null;
-                 out[j] = null;
-                 if (all) {
-                     out.appendAll(union);
-                 } else {
-                     out.push(union);
-                 }
-                 if (opt.onmerge) {
-                     opt.onmerge(a, b, union);
-                 }
-                 continue outer;
-             }
-         }
-     }
+    outer: for (i=0; i<out.length; i++) {
+        if (!out[i]) continue;
+        for (j=i+1; j<out.length; j++) {
+            if (!out[j]) continue;
+            union = out[i].union(out[j], minarea, all);
+            if (union && union.length) {
+                // if (opt.onmerge) {
+                //     a = out[i];
+                //     b = out[j];
+                // }
+                out[i] = null;
+                out[j] = null;
+                if (all) {
+                    out.appendAll(union);
+                } else {
+                    out.push(union);
+                }
+                // if (opt.onmerge) {
+                //     opt.onmerge(a, b, union);
+                // }
+                continue outer;
+            }
+        }
+    }
 
-     for (i=0; i<out.length; i++) {
-         if (out[i]) uset.push(out[i]);
-     }
+    for (i=0; i<out.length; i++) {
+        if (out[i]) {
+            if (!minarea || out[i].area() >= minarea) {
+                uset.push(out[i]);
+            }
+        }
+    }
 
-     opt.changes = length(uset) - lpre;
-     return uset;
- }
+    opt.changes = length(uset) - lpre;
+    return uset;
+}
+
+/**
+ * Recursively process triangle soup from mesh by bucketing them
+ * by grid cell locality with max depth. This minimizes the number
+ * of progressive small unions. Results in a few unions of larger polys.
+ * Optimized for unioning 1000+ triangular faces from mesh slicing.
+ *
+ * @param {Polygon[]} polys - array of polygons (typically triangular faces)
+ * @param {number} depth - recursion depth (internal, default 0)
+ * @returns {Polygon[]} unioned polygons
+ */
+export function unionFaces(polys, depth = 0) {
+    if (depth < 5 && polys.length > 1000) {
+        // Calculate bounding box of all triangles
+        let minX = Infinity, maxX = -Infinity;
+        let minY = Infinity, maxY = -Infinity;
+        for (let tri of polys) {
+            for (let pt of tri.points) {
+                minX = Math.min(minX, pt.x);
+                maxX = Math.max(maxX, pt.x);
+                minY = Math.min(minY, pt.y);
+                maxY = Math.max(maxY, pt.y);
+            }
+        }
+
+        // Create NxN grid
+        const gridSize = 3;
+        const cellWidth = (maxX - minX) / gridSize;
+        const cellHeight = (maxY - minY) / gridSize;
+
+        // Partition polygons into grid cells
+        const grid = Array(gridSize).fill(0).map(() => Array(gridSize).fill(0).map(() => []));
+
+        for (let i = 0; i < polys.length; i++) {
+            const poly = polys[i];
+            // Use polygon centroid to assign to cell
+            const bounds = poly.bounds;
+            const cx = (bounds.minx + bounds.maxx) / 2;
+            const cy = (bounds.miny + bounds.maxy) / 2;
+
+            // Clamp to grid bounds
+            let gx = Math.floor((cx - minX) / cellWidth);
+            let gy = Math.floor((cy - minY) / cellHeight);
+            gx = Math.max(0, Math.min(gridSize - 1, gx));
+            gy = Math.max(0, Math.min(gridSize - 1, gy));
+
+            grid[gx][gy].push(poly);
+        }
+
+        // Union within each cell
+        const cellResults = [];
+        let totalInCell = 0;
+        for (let gx = 0; gx < gridSize; gx++) {
+            for (let gy = 0; gy < gridSize; gy++) {
+                const cellPolys = grid[gx][gy];
+                if (cellPolys.length > 0) {
+                    totalInCell += cellPolys.length;
+                    const cellUnion = unionFaces(cellPolys, depth + 1);
+                    cellResults.push(...cellUnion);
+                }
+            }
+        }
+
+        // Union the cell results
+        polys = unionFaces(cellResults, depth + 1);
+
+    } else {
+        polys = union(polys, 0, true, { wasm: false });
+    }
+
+    return polys;
+}
 
 /**
  * @param {Polygon} poly clipping mask
  * @returns {?Polygon[]}
  */
-function diff(setA, setB, z) {
+export function diff(setA, setB, z) {
     let clip = new Clipper(),
         tree = new PolyTree(),
         sp1 = toClipper(setA),
@@ -509,7 +611,7 @@ function diff(setA, setB, z) {
  * @param {Polygon} poly clipping mask
  * @returns {?Polygon[]}
  */
- function xor(set, z) {
+export function xor(set, z) {
     z = z || set[0].getZ();
     outer: for (;;) {
         // sort largest to smallest area
@@ -552,13 +654,15 @@ function diff(setA, setB, z) {
  * @param {Polygon[]} setB mask set
  * @returns {Polygon[]}
  */
-function trimTo(setA, setB) {
+export function trimTo(setA, setB, opt = {}) {
     // handle null/empty slices
-    if (setA === setB || setA === null || setB === null) return null;
+    if (setA === setB || setA === null || setB === null) {
+        return null;
+    }
 
     let out = [], tmp;
-    util.doCombinations(setA, setB, {}, function(a, b) {
-        if (tmp = a.mask(b)) {
+    util.doCombinations(setA, setB, {}, (a, b) => {
+        if (tmp = a.mask(b, opt.nullEq, opt.minArea)) {
             out.appendAll(tmp);
         }
     });
@@ -566,7 +670,7 @@ function trimTo(setA, setB) {
     return out;
 }
 
-function sumCirc(polys) {
+export function sumCirc(polys) {
     let sum = 0.0;
     polys.forEach(function(poly) {
         sum += poly.circularityDeep();
@@ -584,7 +688,7 @@ function sumCirc(polys) {
  * @param {Function} [collector] receives output of each pass
  * @returns {Polygon[]} last offset
  */
-function expand(polys, distance, z, out, count, distance2, collector, min) {
+export function expand(polys, distance, z, out, count, distance2, collector, min) {
     return offset(polys, [distance, distance2 || distance], {
         z, outs: out, call: collector, minArea: min, count, flat: true
     });
@@ -595,11 +699,12 @@ function expand(polys, distance, z, out, count, distance2, collector, min) {
  * and return resulting gaps from offsets for thin wall detection in
  * in FDM mode and uncleared areas in CAM mode.
  */
-function offset(polys, dist, opts = {}) {
+export function offset(polys, dist, opts = {}) {
     let open = opts.open ? polys.filter(p => p.open) : [];
     if (open.length) {
-        open = open.map(p => paths.pointsToPath(p.points, dist, true));
-        open = open.map(p => base.newPolygon().setOpen().addPoints(p.right));
+        open = open.map(p => paths.pointsToPath(p.points, Array.isArray(dist) ? dist[0] : dist, true));
+        open = open.map(p => newPolygon().setOpen().addPoints(p.right));
+        if (opts.z) open.forEach(p => p.setZ(opts.z));
     }
 
     // do not use clipper to offset open lines
@@ -626,7 +731,7 @@ function offset(polys, dist, opts = {}) {
         mina = numOrDefault(opts.minArea, 0.1),
         zed = opts.z || 0;
 
-    if (opts.wasm && geo.wasm) {
+    if (opts.wasm && geo.wasm && join === JoinType.jtMiter && fill === FillNonZero && type === EndType.etClosedPolygon) {
         try {
             polys = geo.wasm.js.offset(polys, offs, zed, clean ? config.clipperClean : 0, simple ? 1 : 0);
             if (open.length) polys.appendAll(open);
@@ -643,24 +748,27 @@ function offset(polys, dist, opts = {}) {
         for (let poly of polys) {
             // convert to clipper format
             poly = poly.toClipper();
-            if (clean) poly = CleanPolygons(poly, config.clipperClean);
+            if (clean) poly = CleanPolygons(poly, opts.cleanDist ?? config.clipperClean);
             if (simple) poly = SimplifyPolygons(poly, fill);
             coff.AddPaths(poly, join, type);
         }
         // perform offset
-        coff.Execute(tree, offs * config.clipper);
+        coff.Execute(tree, (offs * config.clipper) | 0);
         // convert back from clipper output format
         polys = fromClipperTree(tree, zed, null, null, mina);
     }
 
-
     // if specified, perform offset gap analysis
     if (opts.gaps && polys.length) {
         let oneg = offset(polys, -offs, {
-            fill: opts.fill, join: opts.join, type: opts.type, z: opts.z, minArea: mina
+            fill: opts.fill,
+            join: opts.join,
+            type: opts.type,
+            z: opts.z,
+            minArea: mina
         });
         let suba = [];
-        let diff = subtract(orig, oneg, suba, null, zed);
+        subtract(orig, oneg, suba, null, zed);
         opts.gaps.append(suba, opts.flat);
     }
 
@@ -699,7 +807,7 @@ function offset(polys, dist, opts = {}) {
  * as performing subtractive analysis between initial layer shell (ref)
  * and last offset (cmp) to produce gap candidates (for thinfill)
  */
-function inset(polys, dist, count, z, wasm) {
+export function inset(polys, dist, count, z, wasm) {
     let total = count;
     let layers = [];
     let ref = polys;
@@ -742,7 +850,7 @@ function inset(polys, dist, count, z, wasm) {
  * @param {number} [maxLen]
  * @returns {Point[]} supplied output or new array
  */
-function fillArea(polys, angle, spacing, output, minLen, maxLen) {
+export function fillArea(polys, angle, spacing, output, minLen, maxLen) {
     if (polys.length === 0) return;
 
     let i = 1,
@@ -764,7 +872,7 @@ function fillArea(polys, angle, spacing, output, minLen, maxLen) {
     while (angle > 90) angle -= 180;
 
     // X,Y ray slope derived from angle
-    raySlope = base.newSlope(0,0,
+    raySlope = newSlope(0,0,
         Math.cos(angle * DEG2RAD) * spacing,
         Math.sin(angle * DEG2RAD) * spacing
     );
@@ -836,8 +944,8 @@ function fillArea(polys, angle, spacing, output, minLen, maxLen) {
                 if (minlen && plen < minlen) continue;
                 if (maxlen && plen > maxlen) continue;
             }
-            let p1 = base.pointFromClipper(poly.m_polygon[0], zpos);
-            let p2 = base.pointFromClipper(poly.m_polygon[1], zpos);
+            let p1 = pointFromClipper(poly.m_polygon[0], zpos);
+            let p2 = pointFromClipper(poly.m_polygon[1], zpos);
             let od = rayint.origin.distToLineNew(p1,p2) / spacing;
             lines.push([p1, p2, od]);
         }
@@ -868,7 +976,8 @@ function fillArea(polys, angle, spacing, output, minLen, maxLen) {
  * @param {boolean} [for_fill]
  * @returns {Point[]}
  */
-function rayIntersect(start, slope, polygons, for_fill) {
+export function rayIntersect(start, slope, polygons, for_fill) {
+    throw "deprecated";
     let i = 0,
         flat = [],
         points = [],
@@ -997,11 +1106,11 @@ function rayIntersect(start, slope, polygons, for_fill) {
     return points;
 }
 
-function pd(a,b) {
+export function pd(a,b) {
     return a > b ? Math.abs(1-b/a) : Math.abs(1-a/b);
 }
 
-function fingerprint(polys) {
+export function fingerprint(polys) {
     let recs = flatten(polys).map(p => {
         return {
             l: p.length,
@@ -1030,7 +1139,7 @@ function fingerprint(polys) {
 }
 
 // compare fingerprint arrays
-function fingerprintCompare(a, b) {
+export function fingerprintCompare(a, b) {
     // true if array is the same object
     if (a === b) {
         return true;
@@ -1072,7 +1181,7 @@ function fingerprintCompare(a, b) {
 
 // plan a route through an array of polygon center points
 // starting with the polygon center closest to "start"
-function route(polys, start) {
+export function route(polys, start) {
     let centers = [];
     let first, minDist = Infinity;
     for (let poly of polys) {
@@ -1109,4 +1218,92 @@ function route(polys, start) {
     return routed.map(r => r.poly);
 }
 
-});
+function dedup(arr, same) {
+    const out = [];
+    let prev;
+    for (const x of arr) {
+        if (!prev || !same(prev, x)) out.push(x);
+        prev = x;
+    }
+    return out;
+}
+
+/**
+ * Given an array of Polygons, attempt to reconnect open polygons
+ * into longer chains. If the chains close, emit a closed Polygon.
+ * Closed polygons are ignored and passed into the output.
+ *
+ * @param {Polygon[]} polys polygons
+ * @param {boolean} sameZ require open polygons to share endpoints with the same Z
+ * @returns array of connected or closed polygons
+ */
+export function reconnect(polys, sameZ = true) {
+    for (let p of polys) {
+        if (p.appearsClosed()) {
+            p.points.pop();
+            p.setClosed();
+        }
+    }
+    if (polys.length > 1) {
+        let heal = 0;
+        // heal/rejoin open segments that share endpoints
+        outer: for (; ; heal++) {
+            let ntmp = polys, tlen = ntmp.length;
+            for (let i = 0; i < tlen; i++) {
+                let s1 = ntmp[i];
+                if (!s1) continue;
+                for (let j = i + 1; j < tlen; j++) {
+                    let s2 = ntmp[j];
+                    if (!s2) continue;
+                    // require polys at same Z to heal
+                    if (sameZ && Math.abs(s1.getZ() - s2.getZ()) > 0.01) {
+                        continue;
+                    }
+                    if (!(s1.open && s2.open)) continue;
+                    if (s1.last().isMergable2D(s2.first())) {
+                        s1.addPoints(s2.points);
+                        ntmp[j] = null;
+                        continue outer;
+                    }
+                    if (s2.last().isMergable2D(s1.first())) {
+                        s2.addPoints(s1.points);
+                        ntmp[i] = null;
+                        continue outer;
+                    }
+                    if (s1.first().isMergable2D(s2.first())) {
+                        s1.reverse();
+                        s1.addPoints(s2.points);
+                        ntmp[j] = null;
+                        continue outer;
+                    }
+                    if (s1.last().isMergable2D(s2.last())) {
+                        s2.reverse();
+                        s1.addPoints(s2.points);
+                        ntmp[j] = null;
+                        continue outer;
+                    }
+                }
+            }
+            break;
+        }
+        if (heal > 0) {
+            // cull nulls
+            polys = polys.filter(o => o);
+        }
+        // close poly if head meets tail
+        for (let poly of polys) {
+            poly.points = dedup(poly.points, (a,b) => a.isMergable3D(b));
+            if (poly.open) {
+                if (poly.first().isMergable3D(poly.last())) {
+                    poly.points.pop();
+                    poly.open = false;
+                } else if (poly.first().isMergable2D(poly.last())) {
+                    poly.open = false;
+                }
+            }
+        }
+    }
+    return polys;
+}
+
+export const polygons = POLYS;

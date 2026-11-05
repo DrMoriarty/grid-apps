@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch: # Allows manual triggering
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -21,14 +24,21 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
 
-      - name: Install dependencies
-        run: npm install
+      - name: Setup Build Environment
+        run: npm run setup
 
       - name: Build Electron app
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-        run: npm run build
+          SKIPNOT: '1' # no Apple notarization credentials in CI
+        run: npm run build-nopublish
+
+      - name: Build Electron app (mac x64)
+        if: matrix.os == 'macos-latest'
+        env:
+          SKIPNOT: '1' # no Apple notarization credentials in CI
+        run: npx electron-builder --mac --x64 --publish never
 
       - name: Display Build Artifacts
         run: ls -l dist
@@ -38,14 +48,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-linux
-          path: dist/*.zip
+          path: dist/*.AppImage
 
-      - name: Upload Windows artifact
-        if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-win
-          path: dist/*.exe
+      - name: Sha256 Mac artifact
+        if: matrix.os == 'macos-latest'
+        run: shasum -a 256 dist/*.dmg
 
       - name: Upload Mac artifact
         if: matrix.os == 'macos-latest'
@@ -54,34 +61,37 @@ jobs:
           name: build-mac
           path: dist/*.dmg
 
-      - name: Sha256 Mac artifact
-        if: matrix.os == 'macos-latest'
-        run: shasum -a 256 dist/*.dmg
+      - name: Sha256 Windows artifacts
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: sha256sum dist/*.exe dist/*.zip
+
+      - name: Upload Windows artifact
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-windows
+          path: |
+            dist/*.exe
+            dist/*.zip
 
   create_release:
     runs-on: ubuntu-latest
     needs: build
 
     steps:
+      # Full history AND tags are needed to build the changelog range
+      # (a default shallow checkout carries neither).
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Create release name
         run: node bin/github-getver.js "${{ github.event_name }}"
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1.1.4
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-        with:
-          tag_name: ${{ env.TAG_NAME }}
-          release_name: Release ${{ env.TAG_NAME }}
-          draft: false
-          prerelease: false
-
       - name: Download All Release Assets
-        uses: actions/download-artifact@v4.1.7
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
@@ -89,35 +99,78 @@ jobs:
       - name: Display Downloaded Assets
         run: ls -ltR artifacts
 
-      - name: Zip Windows artifact
-        run: zip -r artifacts/KiriMoto-win-x64.zip artifacts/KiriMoto-win-x64.exe
-
-      - name: Upload Release Asset (Linux)
-        uses: actions/upload-release-asset@v1.0.2
+      - name: Rename release assets
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/KiriMoto-linux-x64.zip
-          asset_name: KiriMoto-Ubuntu-x64-${{ env.TAG_NAME }}.zip
-          asset_content_type: application/zip
+          TAG_NAME: ${{ env.TAG_NAME }}
+        run: |
+          cd artifacts
+          shopt -s nullglob
+          # electron-builder names the AppImage with arch "x86_64" (not "x64")
+          zip -9 "KiriMoto-Ubuntu-x64-${TAG_NAME}.zip" KiriMoto-linux-x86_64.AppImage
+          for f in KiriMoto-mac-*.dmg; do
+            case "$f" in
+              *arm64*) mv "$f" "KiriMoto-MacOS-arm-${TAG_NAME}.dmg" ;;
+              *x64*)   mv "$f" "KiriMoto-MacOS-x64-${TAG_NAME}.dmg" ;;
+            esac
+          done
+          for f in KiriMoto-win-*.exe KiriMoto-win-*.zip; do
+            case "$f" in
+              *.exe) mv "$f" "KiriMoto-Windows-x64-${TAG_NAME}.exe" ;;
+              *.zip) mv "$f" "KiriMoto-Windows-x64-${TAG_NAME}.zip" ;;
+            esac
+          done
+          ls -l
 
-      - name: Upload Release Asset (macOS)
-        uses: actions/upload-release-asset@v1.0.2
+      - name: Generate release notes
+        id: notes
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/KiriMoto-mac-arm64.dmg
-          asset_name: KiriMoto-MacOS-arm-${{ env.TAG_NAME }}.dmg
-          asset_content_type: application/octet-stream
+          TAG_REF: ${{ github.ref }}
+        run: |
+          # Notes are only derived for tag pushes; manual runs have no tag ref.
+          if [[ "${TAG_REF}" != refs/tags/v* ]]; then
+            echo "Not a tag push; skipping the manual notes body."
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-      - name: Upload Release Asset (Windows)
-        uses: actions/upload-release-asset@v1.0.2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          version="${TAG_REF#refs/tags/v}"
+          # `|| true` guards against pipefail when no other tag exists yet.
+          previous_tag="$(git tag --sort=-v:refname | grep -v "^v${version}$" | head -1 || true)"
+
+          if [ -z "${previous_tag}" ]; then
+            # First release: no range to describe — let the auto-notes stand alone.
+            echo "Found no previous tag; skipping the manual notes body."
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changelog range: ${previous_tag}..HEAD"
+          log="$(git log "${previous_tag}..HEAD" --no-merges --pretty=format:'- %s (%h)')"
+          if [ -z "${log}" ]; then
+            # Tag re-push or empty range: nothing to list manually.
+            echo "No commits between ${previous_tag} and HEAD; skipping the manual notes body."
+            echo "body_path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "## What's Changed"
+            echo
+            printf '%s\n' "${log}"
+          } > release-notes.md
+          echo "body_path=release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/KiriMoto-win-x64.zip
-          asset_name: KiriMoto-Win-x64-${{ env.TAG_NAME }}.zip
-          asset_content_type: application/zip
+          tag_name: ${{ env.TAG_NAME }}
+          name: Release ${{ env.TAG_NAME }}
+          draft: false
+          prerelease: false
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          # Auto-notes (full changelog, contributors) are appended below the
+          # manual commit list when body_path is set.
+          generate_release_notes: true
+          body_path: ${{ steps.notes.outputs.body_path }}

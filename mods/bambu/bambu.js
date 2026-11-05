@@ -1,10 +1,7 @@
 self.kiri.load(api => {
 
-    console.log('BAMBU MODULE RUNNING');
-
-    const { kiri, moto } = self;
-    const { ui } = kiri;
-    const h = moto.webui;
+    const { uc: ui } = api;
+    const { $, h } = api.web;
     const defams = ";; DEFINE BAMBU-AMS ";
     const readonly = true;
     const stock_colors = Object.values({
@@ -35,7 +32,7 @@ self.kiri.load(api => {
     }).map(v => `${v.substring(1)}FF`);
 
     let local_port = 5309;
-    let local_url = `http://localhost:${local_port}`;
+    let local_host = `localhost:${local_port}`;
     let sequence_id = (Math.random() * 0xfff) | 0;
     let user_id = ((Math.random() * 0xfffffff) | 0).toString();
     let init = false;
@@ -54,7 +51,8 @@ self.kiri.load(api => {
             if (socket.ws) {
                 return;
             }
-            let ws_url = api.onshape ? `${local_url}/bambu` : "/bambu";
+            let ws_url = api.onshape ? `ws://${local_host}/bambu` : "/bambu";
+            console.log({ bambu_ws_url: ws_url });
             let ws = socket.ws = new WebSocket(ws_url);
             ws.onerror = (error) => {
                 socket.open = false;
@@ -565,7 +563,7 @@ self.kiri.load(api => {
 
     function monitoring() {
         let mon = selected?.rec?.serial ?? '';
-        ui.setVisible($('bbl_connect'), select.value !== '' && monitors.indexOf(mon) < 0);
+        ui.setVisible($('bbl_connect'), select?.value && monitors.indexOf(mon) < 0);
         return mon ? true : false;
     }
 
@@ -661,7 +659,7 @@ self.kiri.load(api => {
         }
     });
 
-    api.event.on("init-done", function() {
+    api.event.on("load-done", function() {
         if (init) {
             return;
         }
@@ -1116,7 +1114,7 @@ self.kiri.load(api => {
                         ]),
                         h.div({ class: "var-row f-grow" }, [
                             h.label('active'),
-                            h.input({ id: "bbl_file_active", class: "t-left", readonly })
+                            h.input({ id: "bbl_file_active", class: "t-left", style: "width: 20ch; max-width: 20ch", readonly })
                         ]),
                         h.div({ class: "pop-sep" }),
                         h.div({ class: "f-row gap3 f-grow" }, [
@@ -1232,7 +1230,7 @@ self.kiri.load(api => {
         if (!bound) {
             return;
         }
-        if (devsel.extras?.bbl && !api.ui.deviceSave.disabled) {
+        if (devsel.extras?.bbl && !api.ui.devices.save.disabled) {
             device = devsel;
             printers = devsel.extras.bbl;
             bound.bblman.classList.remove('hide');
@@ -1255,7 +1253,7 @@ self.kiri.load(api => {
     }
 
     function prep_export(gen3mf, gcode, info, settings) {
-        if (!settings.device.extras?.bbl || api.ui.deviceSave.disabled) {
+        if (!settings.device.extras?.bbl || api.ui.devices.save.disabled) {
             $('bambu-output').style.display = 'none';
             return;
         }
@@ -1289,7 +1287,7 @@ self.kiri.load(api => {
 
     function send(filename, gcode, start) {
         const spool = print_ams_select;
-        const baseUrl = api.onshape ? `${local_url}/api/bambu_send` : "/api/bambu_send";
+        const baseUrl = api.onshape ? `http://${local_host}/api/bambu_send` : "/api/bambu_send";
         const url = new URL(baseUrl, window.location.origin);
         url.searchParams.append('host', host);
         url.searchParams.append('code', password);
@@ -1327,4 +1325,4 @@ self.kiri.load(api => {
     setInterval(monitor_keepalive, 5000);
 
     let bblapi = api.bambu = { send, prep_export };
-});
+}, 'Bambu');

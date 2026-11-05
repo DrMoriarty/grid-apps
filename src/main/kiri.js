@@ -1,41 +1,86 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
-"use strict";
+import '../add/array.js';
+import '../add/class.js';
+import '../add/three.js';
+import '../kiri/app/language.js';
+import '../kiri/app/lang-en.js';
 
-gapp.main({
-    app: "kiri",
+import { api } from '../kiri/app/api.js';
+import { init_lang } from '../kiri/app/init/lang.js';
+import { init_input } from '../kiri/app/init/input.js';
+import { init_sync } from '../kiri/app/init/sync.js';
+import { surfaces } from '../kiri/app/init/build.js';
 
-    pre(root) {
-        let mods = root.kirimod = ( root.kirimod || [] );
+let traceload = location.search.indexOf('traceload') > 0;
+let load = [];
 
-        let kiri = root.kiri = {
-            beta: 0,
-            driver: {
-                // attached driver modules
-            },
-            load(fn) {
-                // modules register exec() functions
-                mods.push(fn);
-            },
-            load_exec(api) {
-                // process all module exec() functions
-                const saferun = (fn) => {
-                    try {
-                        fn(api || kiri.api);
-                    } catch (error) {
-                        console.log({ module_error: error });
-                    }
-                };
-                // complete module loading
-                mods.forEach(fn => saferun(fn));
-                // rewrite load() to run immediately post-finalize
-                kiri.load = (fn) => saferun(fn);
-            }
-        };
-    },
-
-    post(root) {
-        // complete module loading
-        root.kiri.load_exec();
+function safeExec(fn, name) {
+    try {
+        if (traceload) {
+            console.log('kiri | exec |', name, fn);
+        } else if (name) {
+            console.log('kiri | load mods |', name);
+        }
+        fn(kiri.api);
+    } catch (error) {
+        console.log('load error', fn, error);
     }
-});
+}
+
+async function checkReady() {
+    if (document.readyState === 'complete') {
+        let bootctrl = navigator.serviceWorker.controller;
+        console.log(`kiri | boot ctrl | ` + (bootctrl ? true : false));
+        kiri.api = api;
+        self.$ = api.web.$;
+        {
+            api.client.start();
+            await init_lang();
+            surfaces.build();
+            await init_input();
+            await init_sync();
+        }
+        for (let [fn, name] of load) {
+            safeExec(fn, name);
+        }
+        load = undefined;
+        api.event.emit('load-done', stats);
+        api.event.emit('resize');
+        if (api.electron) {
+            $('install').classList.add('hide');
+            $('app-quit').classList.remove('hide');
+            [...document.getElementsByClassName('el-app-hide')].forEach(el => el.classList.add('hide'));
+        } else if (bootctrl) {
+            $('install').classList.add('hide');
+            $('uninstall').classList.remove('hide');
+            $('uninstall').onclick = () => {
+                bootctrl.postMessage({ clear: true, disable: true });
+                location.reload();
+            }
+        } else {
+            [...document.getElementsByClassName('app-hide')].forEach(el => el.classList.add('hide'));
+            $('install').onclick = () => {
+                location.replace('/boot');
+            }
+        }
+    }
+}
+
+self.kiri = {
+    load(fn, name) {
+        // console.log('KIRI LOAD', [...arguments]);
+        if (load) {
+            load.push([fn, name]);
+        } else {
+            safeExec(fn, name);
+        }
+    }
+};
+
+self.moto = { };
+
+// when dom + scripts complete
+document.onreadystatechange = checkReady;
+
+checkReady();

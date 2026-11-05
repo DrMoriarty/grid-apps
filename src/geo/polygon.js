@@ -2,22 +2,21 @@
 
 "use strict";
 
-// dep: geo.base
-// dep: geo.paths
-// dep: ext.clip2
-// dep: ext.earcut
-// dep: geo.point
-// dep: geo.bounds
-// dep: geo.polygons
-gapp.register("geo.polygon", [], (root, exports) => {
+import { base, config, util } from './base.js';
+import { paths } from './paths.js';
+import { ClipperLib } from '../ext/clip2.esm.js';
+import { newBounds } from './bounds.js';
+import { newPoint, pointFromClipper } from './point.js';
+import { polygons as POLY } from './polygons.js';
+import * as geo from './poly/geo.js';
+import * as arcs from './poly/arcs.js';
+import * as mesh from './poly/mesh.js';
+import * as path from './poly/path.js';
 
-const { base } = root;
-const { config, util, polygons, newBounds, newPoint } = base;
+const { Vector3 } = THREE;
 
-const POLY = polygons,
-    XAXIS = new THREE.Vector3(1,0,0),
+let XAXIS = new Vector3(1,0,0),
     DEG2RAD = Math.PI / 180,
-    ClipperLib = self.ClipperLib,
     Clipper = ClipperLib.Clipper,
     ClipType = ClipperLib.ClipType,
     PolyType = ClipperLib.PolyType,
@@ -39,7 +38,7 @@ const POLY = polygons,
 
 let seqid = Math.round(Math.random() * 0xffffffff);
 
-class Polygon {
+export class Polygon {
     constructor(points) {
         this.id = seqid++; // polygon unique id
         this.open = false;
@@ -75,12 +74,24 @@ class Polygon {
         return bounds;
     }
 
+    getBounds3D(bounds = new THREE.Box3()) {
+        for (let point of this.points) {
+            bounds.expandByPoint(point);
+        }
+        if (this.inner) {
+            for (let i of this.inner) {
+                i.getBounds3D(bounds);
+            }
+        }
+        return bounds;
+    }
+
     toPath2D(offset) {
-        return base.paths.pointsToPath(this.points, offset, this.open);
+        return paths.pointsToPath(this.points, offset, this.open);
     }
 
     toPath3D(offset, height, z) {
-        return base.paths.pathTo3D(this.toPath2D(offset), height, z);
+        return paths.pathTo3D(this.toPath2D(offset), height, z);
     }
 
     toString(verbose) {
@@ -214,43 +225,7 @@ class Polygon {
     }
 
     earcut() {
-        // gather all points into a single array including inner polys
-        // keeping track of array offset indices for inners
-        let out = [];
-        let holes = [];
-
-        // flatten points into array for earcut()
-        this.points.forEach(p => {
-            out.push(p.x, p.y, p.z);
-        });
-
-        // add hole offsets for inner polygons
-        if (this.inner) {
-            this.inner.forEach(p => {
-                holes.push(out.length / 3);
-                p.points.forEach(p => {
-                    out.push(p.x, p.y, p.z);
-                })
-            });
-        }
-
-        // perform earcut()
-        let cut = self.earcut(out, holes, 3);
-        let ret = [];
-
-        // preserve swaps in new polys
-        for (let i = 0; i < cut.length; i += 3) {
-            let p = new Polygon();
-            p._aligned = this._aligned;
-            p._swapped = this._swapped;
-            for (let j = 0; j < 3; j++) {
-                let n = cut[i + j] * 3;
-                p.add(out[n], out[n + 1], out[n + 2]);
-            }
-            ret.push(p);
-        }
-
-        return ret;
+        return mesh.earcut(this);
     }
 
     setInner(inner) {
@@ -261,330 +236,29 @@ class Polygon {
     // generate a trace path around the inside of a polygon
     // including inner polys. return the noodle and the remainder
     // of the polygon with the noodle removed (for the next pass)
+    // todo: relocate this code to post.js
     noodle(width) {
-        // inset outer polygon
-        let inner = this.inner;
-        let inset = this.clone().offset(width);
-        let noodot = [ this.clone().setInner(inset) ];
-        let noodin = [];
-        // subtract inners from the inset
-        if (inner) {
-            noodot = POLY.subtract(noodot, inner, []);
-            // for each inner, offset and subtract noodle + itself
-            let nood = [];
-            for (let innie of inner) {
-                let inexp = innie.clone().offset(-width);
-                let intrm = POLY.trimTo(inexp, [ this ]);
-                let inood = POLY.subtract(intrm, [ ...noodot, innie ], []);
-                nood.push(...inood);
-            }
-            noodin = POLY.union(nood, 0, true);
-        }
-        // unify inner noodles and outer noodle
-        let noodle = POLY.union([ ...noodot, ...noodin ], 0, true);
-        // subtract noodle from poly for next noodle calc
-        let remain = POLY.subtract([ this ], noodle, []);
-        return { noodle, remain };
+        return path.noodle(this, width);
     }
 
     // generate center crossing point cloud
+    // only used for fdm thin-wall type 1 (fdm/post.js)
+    // todo: relocate this code to post.js
     centers(step, z, min, max, opt = {}) {
-        let cloud = [],
-            bounds = this.bounds,
-            lines = opt.lines || false,
-            stepoff = step / 2,
-            set = [this.points];
-
-        if (this.inner) {
-            for (let inner of this.inner) {
-                set.push(inner.points);
-            }
-        }
-
-        for (let y of util.lerp(bounds.miny + stepoff, bounds.maxy - stepoff, step, true)) {
-            let ints = [];
-            for (let points of set) {
-                let length = points.length;
-                for (let i = 0; i < length; i++) {
-                    let p1 = points[i % length];
-                    let p2 = points[(i + 1) % length];
-                    if (
-                        (p1.y <= y && p2.y > y) ||
-                        (p1.y > y && p2.y <= y)
-                    ) ints.push([p1, p2]);
-                }
-            }
-            let cntr = [];
-            if (ints.length && ints.length % 2 === 0) {
-                for (let int of ints) {
-                    let [p1, p2] = int;
-                    if (p2.y < p1.y) {
-                        let tp = p1;
-                        p1 = p2;
-                        p2 = tp;
-                    }
-                    let minx = Math.min(p1.x, p2.x);
-                    let maxx = Math.max(p1.x, p2.x);
-                    let miny = Math.min(p1.y, p2.y);
-                    let maxy = Math.max(p1.y, p2.y);
-                    let dx = p2.x - p1.x;
-                    let dy = maxy - miny;
-                    let pct = (y - miny) / dy;
-                    let xpo = p1.x + pct * dx;
-                    cntr.push(xpo);
-                }
-            }
-            cntr.sort((a, b) => {
-                return b - a;
-            });
-            let lp, eo = 0;
-            for (let x of cntr) {
-                let p = newPoint(x, y, z);
-                if (eo++ % 2) {
-                    let d = lp.distTo2D(p);
-                    if (d >= min && d <= max) {
-                        if (lines) {
-                            cloud.push(lp);
-                            cloud.push(p);
-                        } else {
-                            cloud.push(newPoint(
-                                (lp.x + p.x) / 2, y, z
-                            ));
-                        }
-                    }
-                } else {
-                    lp = p;
-                }
-            }
-        }
-
-        for (let x of util.lerp(bounds.minx + stepoff, bounds.maxx - stepoff, step, true)) {
-            let ints = [];
-            for (let points of set) {
-                let length = points.length;
-                for (let i = 0; i < length; i++) {
-                    let p1 = points[i % length];
-                    let p2 = points[(i + 1) % length];
-                    if (
-                        (p1.x <= x && p2.x > x) ||
-                        (p1.x > x && p2.x <= x)
-                    ) ints.push([p1, p2]);
-                }
-            }
-            let cntr = [];
-            if (ints.length && ints.length % 2 === 0) {
-                for (let int of ints) {
-                    let [p1, p2] = int;
-                    if (p2.x < p1.x) {
-                        let tp = p1;
-                        p1 = p2;
-                        p2 = tp;
-                    }
-                    let minx = Math.min(p1.x, p2.x);
-                    let maxx = Math.max(p1.x, p2.x);
-                    let miny = Math.min(p1.y, p2.y);
-                    let maxy = Math.max(p1.y, p2.y);
-                    let dx = maxx - minx;
-                    let dy = p2.y - p1.y;
-                    let pct = (x - minx) / dx;
-                    let ypo = p1.y + pct * dy;
-                    cntr.push(ypo);
-                }
-            }
-            cntr.sort((a, b) => {
-                return b - a;
-            });
-            let lp, eo = 0;
-            for (let y of cntr) {
-                let p = newPoint(x, y, z);
-                if (eo++ % 2) {
-                    let d = lp.distTo2D(p);
-                    if (d >= min && d <= max) {
-                        if (lines) {
-                            cloud.push(lp);
-                            cloud.push(p);
-                        } else {
-                            cloud.push(newPoint(
-                                x, (lp.y + p.y) / 2, z
-                            ));
-                        }
-                    }
-                } else {
-                    lp = p;
-                }
-            }
-        }
-
-        if (lines) {
-            return cloud;
-        }
-
-        let mindist = opt.mindist || step * 1.5;
-
-        function build(poly) {
-            let lastp = poly.last();
-            let minp;
-            let mind = Infinity;
-            for (let point of cloud) {
-                let dist = point.distTo2D(lastp);
-                if (dist < mindist && dist < mind) {
-                    mind = dist;
-                    minp = point;
-                }
-            }
-            if (minp) {
-                cloud = cloud.filter(p => p !== minp);
-                poly.push(minp);
-                return true;
-            }
-            return false;
-        }
-
-        // join points into polys
-        let polys = [];
-        let poly = [];
-        while (cloud.length) {
-            if (poly.length === 0) {
-                poly = [cloud.shift()];
-                polys.push(poly);
-                continue;
-            }
-            if (build(poly)) {
-                continue;
-            }
-            if (!poly.flip) {
-                poly.reverse();
-                poly.flip = true;
-                continue;
-            }
-            if (poly.length) {
-                poly = [];
-            } else {
-                throw "whoop there it is";
-            }
-        }
-
-        return polys
-            .filter(poly => poly.length > 1)
-            .map(poly => {
-                let np = base.newPolygon().setOpen();
-                for (let p of poly) {
-                    np.push(p);
-                }
-                if (np.last().distTo2D(np.first()) <= max) {
-                    np.setClosed();
-                }
-                np = np.clean();
-                return np;
-            });
+        return path.centers(this, step, z, min, max, opt);
     }
 
     debur(dist) {
-        if (this.len < 2) {
-            return null;
-        }
-        const pa = this.points,
-            pln = pa.length,
-            open = this.open,
-            newp = newPolygon().copyZ(this.z),
-            min = dist || base.config.precision_merge;
-        let lo;
-        newp.push(lo = pa[0]);
-        for (let i = 1; i < pln; i++) {
-            if (lo.distTo2D(pa[i]) >= min) {
-                newp.push(lo = pa[i]);
-            }
-        }
-        newp.open = open;
-        newp.parent = this.parent;
-        if (newp.length < 2) {
-            return null;
-        }
-        return newp;
+        return geo.debur(this, dist);
     }
 
     miter(debug) {
-        if (this.length < 3) return this;
-
-        const slo = [],
-            pa = this.points,
-            pln = pa.length,
-            open = this.open;
-        let last;
-        for (let i = 1; i < pln; i++) {
-            slo.push(pa[i - 1].slopeTo(last = pa[i]));
-        }
-        if (!open) {
-            slo.push(last.slopeTo(pa[0]));
-        }
-
-        const ang = new Array(pln).fill(0);
-        let redo = false;
-        const aln = open ? pln - 1 : pln;
-        for (let i = 1; i < aln; i++) {
-            ang[i] = slopeDiff(slo[i - 1], slo[i]);
-            redo |= ang[i] > 90;
-        }
-        if (!open) {
-            // ang[pln-1] = slopeDiff(slo[pln-2], slo[pln-1]);
-            ang[0] = slopeDiff(slo[pln - 1], slo[0]);
-            redo |= ang[pln - 1] > 90;
-            redo |= ang[0] > 90;
-        }
-        if (redo) {
-            const newp = newPolygon().copyZ(this.z);
-            // newp.debug = this.debug = true;
-            newp.open = open;
-            for (let i = 0; i < pln; i++) {
-                const p = pa[(i + pln) % pln];
-                const d = ang[(i + pln) % pln];
-                if (d > 179) {
-                    const s = slo[(i + pln) % pln];
-                    const pp = pa[(i + pln - 1) % pln];
-                    const ps = slo[(i + pln - 1) % pln];
-                    newp.push(p.follow(p.slopeTo(pp).normal(), 0.001));
-                    newp.push(p.follow(s.clone().normal().invert(), 0.001));
-                } else if (d > 90) {
-                    const s = slo[(i + pln) % pln];
-                    const pp = pa[(i + pln - 1) % pln];
-                    const ps = slo[(i + pln - 1) % pln];
-                    newp.push(p.follow(p.slopeTo(pp), 0.001));
-                    newp.push(p.follow(s, 0.001));
-                } else {
-                    p.parent = newp;
-                    newp.push(p);
-                }
-            }
-            return newp;
-        }
-        return this;
+        return geo.miter(this, debug);
     }
 
+    // only used in fdm/slice.js for enclosing supports
     createConvexHull(points) {
-        function removeMiddle(a, b, c) {
-            let cross = (a.x - b.x) * (c.y - b.y) - (a.y - b.y) * (c.x - b.x);
-            let dot = (a.x - b.x) * (c.x - b.x) + (a.y - b.y) * (c.y - b.y);
-            return cross < 0 || cross == 0 && dot <= 0;
-        }
-
-        points.sort(function(a, b) {
-            return a.x != b.x ? a.x - b.x : a.y - b.y;
-        });
-
-        let n = points.length;
-        let hull = [];
-
-        for (let i = 0; i < 2 * n; i++) {
-            let j = i < n ? i : 2 * n - 1 - i;
-            while (hull.length >= 2 && removeMiddle(hull[hull.length - 2], hull[hull.length - 1], points[j]))
-                hull.pop();
-            hull.push(points[j]);
-        }
-
-        hull.pop();
-        this.addPoints(hull);
-
-        return this;
+        return geo.createConvexHull(this, points);
     }
 
     stepsFromRoot() {
@@ -659,29 +333,7 @@ class Polygon {
      * @returns {Point} center of a polygon assuming it's a circle
      */
     calcCircleCenter() {
-        let pe = this.perimeter(),
-            pe1 = pe / 3, // point 2
-            pe2 = pe1 * 2, // point 3
-            p = this.points,
-            l = p.length,
-            i = 1,
-            td = 0,
-            lp = p[0], // first point
-            ap = [ lp ]; // array of 3 points
-        while (i < l) {
-            let np = p[i++];
-            let d = lp.distTo2D(np);
-            td += d;
-            if (ap.length === 1 && td >= pe1) {
-                ap.push(np);
-            } else if (ap.length === 2 && td >= pe2) {
-                ap.push(np);
-                break;
-            }
-            lp = np;
-        }
-        let center = util.center2d(...ap);
-        return newPoint(center.x, center.y, p[0].z, null);
+        return arcs.calcCircleCenter(this);
     }
 
     /**
@@ -689,60 +341,22 @@ class Polygon {
      * with a common center point and collect as a midpoint/radius
      */
     findArcCenters(opt = {}) {
-        if (this.length < 6) return [];
-        let tolerance = opt.tolerance || 1e-2,
-            inside = opt.inside ?? true,
-            seq = this.points.slice(),
-            util = base.util;
-        if (this.isClosed()) seq.appendAll(seq.slice(0,5));
-        let recs = [], // accumulated arc points
-            cand = []; // candidate center array
-        for (let pos=3; pos<seq.length; pos++) {
-            let next = util.circleCenter(...seq.slice(pos-3, pos));
-            let prev = cand.peek();
-            if (inside && !newPoint(next.x,next.y).inPolygon(this)) {
-                // require point be inside current polygon
-                next = null;
-            }
-            // console.log({ pos, next, prev, cand });
-            if (next && !prev) {
-                // seed candidate list
-                cand.push(next);
-                continue;
-            }
-            if (!next) {
-                // next is a bust, reset candidate list
-                cand.length = 0;
-                continue;
-            }
-            // const dist = util.dist2D(next,prev);
-            // console.log({ dist: dist.round(6) });
-            if (util.dist2D(next,prev) < tolerance) {
-                // add new candidate
-                cand.push(next);
-                continue;
-            } else if (cand.length >= 3) {
-                // emit record on 5 points
-                recs.push(cand.peek());
-            }
-            // reset candidate array
-            cand = [ next ];
-        }
-        if (cand.length >= 3) {
-            recs.push(cand.peek());
-        }
-        // filter dups
-        recs.sort((a,b) => {
-            return util.dist2D(a,b);
-        });
-        recs = recs.filter((r,i) => {
-            if (i > 0) {
-                return util.dist2D(r, recs[i-1]) < tolerance*10 ? null : r;
-            } else {
-                return r;
-            }
-        });
-        return recs;
+        return arcs.findArcCenters(this, opt);
+    }
+
+    /**
+     * Detect and annotate arc sequences in polygon points.
+     * When an arc is detected, the first point is annotated with arc metadata
+     * and intermediate points remain in the array but should be skipped during emission.
+     *
+     * @param {Object} opts - detection options
+     * @param {number} opts.tolerance - arc detection tolerance (default 0.1)
+     * @param {number} opts.arcRes - arc resolution in radians (default 0.1)
+     * @param {number} opts.minPoints - minimum points to consider an arc (default 4)
+     * @returns {Polygon} this polygon with arc annotations
+     */
+    detectArcs(opts = {}) {
+        return arcs.detectArcs(this, opts);
     }
 
     /**
@@ -848,6 +462,7 @@ class Polygon {
      * scale polygon around origin
      */
     scale(scale, round) {
+        this.area2 = undefined;
         let x, y, z;
         if (typeof(scale) === 'number') {
             x = y = z = scale;
@@ -890,6 +505,7 @@ class Polygon {
 
     /**
      * hint fill angle hinting from longest segment
+     * only used in fdm/slice.js for projected infill orientation
      */
     hintFillAngle() {
         let index = 0,
@@ -927,6 +543,7 @@ class Polygon {
      * todo make more efficient
      *
      * @param {Boolean} deep
+     * @param {String[]} fields to copy beyond class fields
      * @returns {Polygon}
      */
     clone(deep, fields) {
@@ -1002,6 +619,39 @@ class Polygon {
         return this.z !== undefined ? this.z : this.points[i || 0]?.z || 0;
     }
 
+    minZ() {
+        let minZ = Math.min(...this.points.map(p => p.z));
+        if (this.inner) {
+            for (let i of this.inner) {
+                minZ = Math.min(minZ, i.minZ());
+            }
+        }
+        return minZ;
+    }
+
+    maxZ() {
+        let maxZ = Math.max(...this.points.map(p => p.z));
+        if (this.inner) {
+            for (let i of this.inner) {
+                maxZ = Math.max(minZ, i.maxZ());
+            }
+        }
+        return maxZ;
+    }
+
+    avgZ() {
+        return [...this.points.map(p => p.z)].reduce((a,v) => a+v) / this.points.length;
+    }
+
+    /**
+     * @param {*} z value target
+     * @param {*} epsilon allowed Z variance
+     * @returns {boolean} true if all points Z within epsilon of value
+     */
+    onZ(z, epsilon = 10e-4) {
+        return Math.max(...this.points.map(p => Math.abs(z - p.z))) < epsilon;
+    }
+
     /**
      */
     render(layer, color, recursive, open) {
@@ -1061,6 +711,7 @@ class Polygon {
      * append point to polygon and return point
      */
     push(p) {
+        this.area2 = undefined;
         // clone any point belonging to another polygon
         if (p.poly) p = p.clone();
         p.poly = this;
@@ -1105,6 +756,26 @@ class Polygon {
         return this.first().isEqual(this.last());
     }
 
+    closeIf(dist = 1) {
+        let closeDist = this.first().distTo2D(this.last());
+        if (closeDist < 0.001) {
+            this.points.pop();
+            return this.setClosed();
+        } else if (closeDist <= dist) {
+            return this.setClosed();
+        } else {
+            return this.setOpen();
+        }
+    }
+
+    fixClosed() {
+        if (this.appearsClosed()) {
+            this.points.pop();
+            this.open = false;
+        }
+        return this;
+    }
+
     setClockwise() {
         if (!this.isClockwise()) this.reverse();
         return this;
@@ -1123,11 +794,12 @@ class Polygon {
         return [this.first().key, this.last().key, this.length].join('~~');
     }
 
-    applyRotations() {
+    applyRotations(deg) {
         for (let point of this.points) {
-            if (point.a) {
-                let p2 = new THREE.Vector3(point.x, point.y, point.z)
-                    .applyAxisAngle(XAXIS, point.a * DEG2RAD);
+            let angleDeg = deg ?? point.a;
+            if (angleDeg) {
+                let p2 = new Vector3(point.x, point.y, point.z)
+                    .applyAxisAngle(XAXIS, angleDeg * DEG2RAD);
                 point.x = p2.x;
                 point.y = p2.y;
                 point.z = p2.z;
@@ -1188,75 +860,6 @@ class Polygon {
         return false;
     }
 
-    /**
-     * Ease down along the polygonal path.
-     *
-     * 1. Travel from fromPoint to closest point on polygon, to rampZ above that that point,
-     * 2. ease-down starts, following the polygonal path, decreasing Z at a fixed slope until target Z is hit,
-     * 3. then the rest of the path is completed and repeated at target Z until touchdown point is reached.
-     * 4. this function should probably move to CAM prepare since it's only called from there
-     */
-    forEachPointEaseDown(fn, fromPoint, degrees = 45) {
-        let index = this.findClosestPointTo(fromPoint).index,
-            fromZ = fromPoint.z,
-            offset = 0,
-            points = this.points,
-            length = points.length,
-            touch = -1, // first point to touch target z
-            targetZ = points[0].z,
-            dist2next,
-            last,
-            next,
-            done;
-
-        // Slope for computations.
-        const slope = Math.tan((degrees * Math.PI) / 180);
-        // Z height above polygon Z from which to start the ease-down.
-        // Machine will travel from "fromPoint" to "nearest point x, y, z' => with z' = point z + rampZ",
-        // then start the ease down along path.
-        const rampZ = 2.0;
-        while (true) {
-            next = points[index % length];
-            if (last && next.z < fromZ) {
-                // When "in Ease-Down" (ie. while target Z not yet reached) - follow path while slowly decreasing Z.
-                let deltaZ = fromZ - next.z;
-                dist2next = last.distTo2D(next);
-                let deltaZFullMove = dist2next * slope;
-
-                if (deltaZFullMove > deltaZ) {
-                    // Too long: easing along full path would overshoot depth, synth intermediate point at target Z.
-                    //
-                    // XXX: please check my super basic trig - this should follow from `last` to `next` up until the
-                    //      intersect at the target Z distance.
-                    fn(last.followTo(next, dist2next * deltaZ / deltaZFullMove).setZ(next.z), offset++);
-                } else {
-                    // Ok: execute full move at desired slope.
-                    next = next.clone().setZ(fromZ - deltaZFullMove);
-                }
-
-                fromZ = next.z;
-            } else if (offset === 0 && next.z < fromZ) {
-                // First point, move to rampZ height above next.
-                let deltaZ = fromZ - next.z;
-                fromZ = next.z + Math.min(deltaZ, rampZ)
-                next = next.clone().setZ(fromZ);
-            }
-            last = next;
-            fn(next, offset++);
-            if ((index % length) === touch) {
-                break;
-            }
-            if (touch < 0 && next.z <= targetZ) {
-                // Save touch-down index so as to be able to "complete" the full cut at target Z,
-                // i.e. keep following the path loop until the touch down point is reached again.
-                touch = ((index + length) % length);
-            }
-            index++;
-        }
-
-        return last;
-    }
-
     forEachPoint(fn, close, start) {
         let index = start || 0,
             points = this.points,
@@ -1288,30 +891,11 @@ class Polygon {
     }
 
     /**
-     * returns intersections sorted by closest to lp1
+     * given two endpoints of a line
+     * find all intersections sorted by closest to lp1
      */
     intersections(lp1, lp2, deep) {
-        let list = [];
-        this.forEachSegment(function(pp1, pp2, ip1, ip2) {
-            let int = util.intersect(lp1, lp2, pp1, pp2, base.key.SEGINT, false);
-            if (int) {
-                list.push(int);
-                // console.log('pp1.pos',pp1.pos,'to',ip1);
-                // console.log('pp2.pos',pp2.pos,'to',ip2);
-                pp1.pos = ip1;
-                pp2.pos = ip2;
-            }
-        });
-        list.sort(function(p1, p2) {
-            return util.distSq(lp1, p1) - util.distSq(lp1, p2);
-        });
-        if (deep && this.inner) {
-            this.inner.forEach(p => {
-                let ints = p.intersections(lp1, lp2);
-                if (ints) list.appendAll(ints);
-            });
-        }
-        return list;
+        return geo.intersections(this, lp1, lp2, deep);
     }
 
     // return true if any line segments on either poly crosses the other
@@ -1369,6 +953,23 @@ class Polygon {
         poly.push(i2);
         // console.log({emit: poly});
         return poly;
+    }
+
+    /**
+     * emit the shortest poly that connects two points on a closed CW poly
+     * because traveling around the 'end point' may yield a shorter route.
+     * if the poly is open, use emitSegment()
+     */
+    emitShortestSegment(i1, i2) {
+        if (this.open) {
+            return this.emitSegment(i1, i2);
+        }
+        let start = i1.p2.pos,
+            end = i2.p1.pos,
+            points = this.points,
+            seg0 = new Polygon([ i1, ...points.slice(start, end + 1), i2 ]).setOpen(),
+            seg1 = new Polygon([ i2, ...points.slice(end +1 ), ...points.slice(0, start), i1 ]).setOpen();
+        return seg0.perimeter() < seg1.perimeter() ? seg0 : seg1;
     }
 
     /**
@@ -1515,6 +1116,7 @@ class Polygon {
         return this;
     }
 
+    // used in geo/slicer.js to free memory
     freeParentRefs() {
         if (this.inner && this.inner.length > 0) {
             for (let inner of this.inner) {
@@ -1527,6 +1129,7 @@ class Polygon {
         }
     }
 
+    // possibly ununsed
     newUndeleted() {
         let poly = newPolygon();
         this.forEachPoint(p => {
@@ -1540,7 +1143,12 @@ class Polygon {
      * @returns {number} 0.0 - 1.0 from flat to perfectly circular
      */
     circularity() {
-        return (4 * Math.PI * this.area()) / util.sqr(this.perimeter());
+        try {
+            return (4 * Math.PI * this.area()) / util.sqr(this.perimeter());
+        } catch (e) {
+            console.log(this.perimeter(), e);
+            return 0;
+        }
     }
 
     circularityDeep() {
@@ -1611,6 +1219,21 @@ class Polygon {
             a -= c[i].area();
         }
         return a;
+    }
+
+    /**
+     * find the ratio of area to perimeter which can give provide
+     * guidance if this polygon is likely to have a thin cross-section
+     *
+     * @param {*} deep whether to include inner holes in the calculation
+     * @returns ratio
+     */
+    thickness(deep) {
+        if (deep) {
+            return 2 * this.areaDeep() / this.perimeterDeep();
+        } else {
+            return 2 * this.area() / this.perimeter();
+        }
     }
 
     /**
@@ -1749,60 +1372,7 @@ class Polygon {
      * @returns {boolean} true if polygons are, essentially, the same
      */
     isEquivalent(poly, recurse, precision) {
-        // throw new Error("isEquivalent");
-        let area1 = Math.abs(this.area());
-        let area2 = Math.abs(poly.area());
-        if (util.isCloseTo(area1, area2, precision || config.precision_poly_area) &&
-            this.bounds.equals(poly.bounds, precision || config.precision_poly_bounds)) {
-            // use circularity near 1 to eliminate the extensive check below
-            let c1 = this.circularity(),
-                c2 = poly.circularity();
-            if (Math.abs(c1 - c2) < config.precision_circularity && ((1 - c1) < config.precision_circularity)) {
-                return true;
-            }
-
-            if (recurse) {
-                let i, ai = this.inner,
-                    bi = poly.inner;
-                if (ai !== bi) {
-                    if (ai === null || bi === null || ai.length != bi.length) {
-                        return false;
-                    }
-                    for (i = 0; i < ai.length; i++) {
-                        if (!ai[i].isEquivalent(bi[i])) {
-                            return false;
-                        }
-                    }
-                }
-            }
-
-            let exit = true,
-                pointok,
-                dist,
-                min;
-
-            this.forEachPoint(i2p => {
-                pointok = false;
-                poly.forEachSegment((i1p1, i1p2) => {
-                    // if point is close to poly, terminate search, go to next point
-                    if ((dist = i2p.distToLine(i1p1, i1p2)) < config.precision_poly_merge) {
-                        return pointok = true;
-                    }
-                    // otherwise track min and keep searching
-                    min = Math.min(min, dist);
-                });
-                // fail poly if one point is bad
-                if (!pointok) {
-                    exit = false;
-                    // terminate search
-                    return true;
-                }
-            });
-            return exit;
-
-        }
-
-        return false;
+        return geo.isEquivalent(this, poly, recurse, precision);
     }
 
     /**
@@ -1819,19 +1389,28 @@ class Polygon {
             closest,
             mindist = Infinity;
 
-        this.forEachPoint((point, pos) => {
-            dist = Math.sqrt(point.distToSq2D(target));
-            if (dist < mindist) {
-                index = pos;
-                mindist = dist;
-                closest = point;
-            }
-        });
+        if (this.open) {
+            let d0 = target.distTo2D(this.first());
+            let d1 = target.distTo2D(this.last());
+            mindist = Math.min(d0, d1);
+            closest = d0 < d1 ? this.first() : this.last();
+            index = d0 < d1 ? 0 : this.points.length - 1;
+        } else {
+            this.forEachPoint((point, pos) => {
+                dist = Math.sqrt(point.distToSq2D(target));
+                if (dist < mindist) {
+                    index = pos;
+                    mindist = dist;
+                    closest = point;
+                }
+            });
+        }
 
         return {
-            point: closest,
             distance: mindist,
-            index: index
+            point: closest,
+            index: index,
+            poly: this
         };
     }
 
@@ -1861,6 +1440,7 @@ class Polygon {
         return out;
     }
 
+    // possibly unused
     shortestSegmentLength() {
         let len = Infinity;
         this.forEachSegment((p1, p2) => {
@@ -1874,11 +1454,13 @@ class Polygon {
      * @returns {?Polygon[]}
      */
     diff(poly) {
-        let fillang = this.fillang && this.area() > poly.area() ? this.fillang : poly.fillang,
-            clip = new Clipper(),
+        let clip = new Clipper(),
             tree = new PolyTree(),
             sp1 = this.toClipper(),
-            sp2 = poly.toClipper();
+            sp2 = poly.toClipper(),
+            fillang = this.fillang
+                && this.area() > poly.area()
+                ? this.fillang : poly.fillang;
 
         clip.AddPaths(sp1, PathSubject, true);
         clip.AddPaths(sp2, PathClip, true);
@@ -1920,11 +1502,14 @@ class Polygon {
      * @returns {?Polygon[]}
      */
     mask(poly, nullOnEquiv, minarea) {
-        let fillang = this.fillang && this.area() > poly.area() ? this.fillang : poly.fillang,
-            clip = new Clipper(),
+        let clip = new Clipper(),
             tree = new PolyTree(),
             sp1 = this.toClipper(),
-            sp2 = poly.toClipper();
+            sp2 = poly.toClipper(),
+            fillang = this.fillang
+                && this.area() > poly.area()
+                ? this.fillang : poly.fillang;
+
         clip.AddPaths(sp1, PathSubject, true);
         clip.AddPaths(sp2, PathClip, true);
 
@@ -2025,13 +1610,9 @@ class Polygon {
 
         // use expand / deflate technique instead
         if (opt.pump) {
-            let p2 = POLY.offset([this], opt.pump, {
-                z
-            });
+            let p2 = POLY.offset([this], opt.pump, { z });
             if (p2) {
-                p2 = POLY.offset(p2, -opt.pump, {
-                    z
-                });
+                p2 = POLY.offset(p2, -opt.pump, { z });
                 return p2;
             }
             return null;
@@ -2047,7 +1628,7 @@ class Polygon {
         return res.map(array => {
             let poly = newPolygon();
             for (let pt of array) {
-                poly.push(base.pointFromClipper(pt, z));
+                poly.push(pointFromClipper(pt, z));
             }
             return poly;
         });
@@ -2066,28 +1647,23 @@ class Polygon {
     union(poly, min, all) {
         if (!this.overlaps(poly)) return null;
 
-        let fillang = this.fillang && this.area() > poly.area() ? this.fillang : poly.fillang,
-            clip = new Clipper(),
+        let clip = new Clipper(),
             tree = new PolyTree(),
             sp1 = this.toClipper(),
             sp2 = poly.toClipper(),
-            minarea = min ?? 0.1;
+            fillang = this.fillang
+                && this.area() >= poly.area()
+                ? this.fillang : poly.fillang;
 
         clip.AddPaths(sp1, PathSubject, true);
         clip.AddPaths(sp2, PathClip, true);
 
         if (clip.Execute(ClipUnion, tree, FillEvenOdd, FillEvenOdd)) {
-            let union = POLY.fromClipperTreeUnion(tree, poly.getZ(), minarea);
+            let union = POLY.fromClipperTreeUnion(tree, poly.getZ(), min ?? 0);
+            let length = union.length;
             if (all) {
-                if (union.length === 2) {
-                    return null;
-                    // if (this.unionMatch(union) || poly.unionMatch(union)) {
-                    //     return null;
-                    // }
-                }
-                return union;
-            }
-            if (union.length === 1) {
+                return length === 2 ? null : union;
+            } else if (length === 1) {
                 union = union[0];
                 union.fillang = fillang;
                 return union;
@@ -2103,6 +1679,7 @@ class Polygon {
         return null;
     }
 
+    // annotate instance with other field data (see clone())
     annotate(obj = {}) {
         Object.assign(this, obj);
         return this;
@@ -2110,260 +1687,51 @@ class Polygon {
 
     // turn 2d polygon into a 2.5D ribbon extruded in Z
     ribbonZ(z = 1, zadd = 0, rev) {
-        let poly = this.clone().setClockwise();
-        let faces = [];
-        let points = poly.points;
-        let length = points.length;
-        if (rev) {
-            points = points.slice().reverse();
-        }
-        for (let i=0; i<length; i++) {
-            let p0 = points[i];
-            let p1 = points[(i + 1) % length];
-            faces.push(p0.x, p0.y, p0.z + zadd);
-            faces.push(p1.x, p1.y, p1.z + z + zadd);
-            faces.push(p1.x, p1.y, p0.z + zadd);
-            faces.push(p0.x, p0.y, p0.z + zadd);
-            faces.push(p0.x, p0.y, p0.z + z + zadd);
-            faces.push(p1.x, p1.y, p1.z + z + zadd);
-        }
-        return faces;
+        return mesh.ribbonZ(this, z, zadd, rev);
     }
 
     // for turning a poly with an inner offset into a
     // 3d mesh if and only if the inner has the same
     // circularity and <= num points
-    // primarily used to make chamfers
+    // primarily used to make chamfers in mesh:tool
+    // todo: relocate
     ribbonMesh(swap) {
-        if (!(this.inner && this.inner.length === 1)) {
-            return undefined;
-        }
-        let outer = this.clone().setClockwise();
-        let inner = this.inner[0].clone().setClockwise();
-        let c0 = outer.circularity();
-        let c1 = inner.circularity();
-        let n0 = outer.points.length;
-        let n1 = inner.points.length;
-        let p0 = outer.points.slice();
-        let p1 = inner.points.slice();
-        let min = { d: Infinity, i:0, j:0 };
-        // find the closests two points inner/outer
-        for (let i=0; i<p0.length; i++) {
-            for (let j=0; j<p1.length; j++) {
-                let d = p0[i].distTo2D(p1[j]);
-                if (d < min.d) {
-                    min = { d, i, j };
-                }
-            }
-        }
-        // slide the arrays until the closest points are aligned at index = 0
-        p0 = p0.slice(min.i).concat(p0.slice(0, min.i)); p0.push(p0[0]);
-        p1 = p1.slice(min.j).concat(p1.slice(0, min.j)); p1.push(p1[0]);
-        // walk both arrays moving to the next poly + point that forms
-        // the shortest line segment between the two points (inner / outer)
-        let faces = [];
-        let pi0 = 0;
-        let pi1 = 0;
-        let pp0 = p0[pi0];
-        let pp1 = p1[pi1];
-        for (;;) {
-            let pn0 = p0[pi0 + 1];
-            let pn1 = p1[pi1 + 1];
-            if ((!pn0 && pn1) || (pn1 && pp0.distTo2D(pn1) < pp1.distTo2D(pn0))) {
-                // emit and increment bottom
-                faces.push(pp0.x, pp0.y, pp0.z);
-                if (swap) {
-                    faces.push(pp1.x, pp1.y, pp1.z);
-                    faces.push(pn1.x, pn1.y, pn1.z);
-                } else {
-                    faces.push(pn1.x, pn1.y, pn1.z);
-                    faces.push(pp1.x, pp1.y, pp1.z);
-                }
-                pi1++;
-                pp1 = p1[pi1];
-            } else if (pn0) {
-                // emit and increment top
-                faces.push(pp0.x, pp0.y, pp0.z);
-                if (swap) {
-                    faces.push(pp1.x, pp1.y, pp1.z);
-                    faces.push(pn0.x, pn0.y, pn0.z);
-                } else {
-                    faces.push(pn0.x, pn0.y, pn0.z);
-                    faces.push(pp1.x, pp1.y, pp1.z);
-                }
-                pi0++;
-                pp0 = p0[pi0];
-            } else {
-                break;
-            }
-        }
-        return faces;
+        return mesh.ribbonMesh(this, swap);
     }
 
     // extrude poly (with inner voids) into 3d mesh
+    // todo: zadd broken when poly Z is not 0
     extrude(z = 1, opt = {}) {
-        let earcut = this.earcut(); // array of 3-point polygons
-
-        // return just the 2D face when no Z depth specified
-        // used primarily by mesh.sketch render()
-        if (z === 0) {
-            return earcut.map(face => face.points.map(p => [ p.x, p.y, p.z ])).flat().flat();
-        }
-
-        let inv = z < 0;
-
-        if (inv) {
-            z = -z;
-        }
-
-        let chamfer = opt.chamfer || 0;
-        let chamfer_top = opt.chamfer_top || chamfer;
-        let chamfer_bottom = opt.chamfer_bottom || chamfer;
-
-        if (inv) {
-            let tmp = chamfer_top;
-            chamfer_top = chamfer_bottom;
-            chamfer_bottom = tmp;
-        }
-
-        let zadd = (typeof opt === 'number' ? opt : opt.zadd || 0); // z bottom
-        let obj = []; // flat output vertex array (float-x,float-y,float-z,...)
-        let top_face = earcut;
-        let bottom_face = earcut;
-        let z_top = z + zadd;
-        let z_bottom = zadd;
-        let z_side_top = z;
-        let z_side_bottom = z_bottom;
-
-        // chamfer bottom only on negative chamfer
-        if (chamfer < 0) {
-            chamfer_top = 0;
-            chamfer_bottom = -chamfer;
-        }
-
-        // create chamfers (when defined)
-        if (chamfer_top) {
-            let inset = this.offset(chamfer_top);
-            if (inset.length === 1) {
-                inset[0].setZ(z_top);
-                top_face = inset[0].earcut();
-                z_side_top -= chamfer_top;
-                let renest = POLY.renest([this.clone(true).setZ(z_side_top), inset[0]]);
-                for (let rnpoly of renest) {
-                    obj.appendAll(rnpoly.ribbonMesh(true));
-                }
-            }
-        }
-
-        if (chamfer_bottom) {
-            let inset = this.offset(chamfer_bottom);
-            if (inset.length === 1) {
-                inset[0].setZ(0);
-                bottom_face = inset[0].earcut();
-                z_side_top -= chamfer_top || chamfer_bottom;
-                z_side_bottom += chamfer_bottom;
-                let renest = POLY.renest([this.clone(true).setZ(z_side_bottom), inset[0]]);
-                for (let rnpoly of renest) {
-                    obj.appendAll(rnpoly.ribbonMesh(false));
-                }
-            }
-        }
-
-        for (let poly of top_face) {
-            for (let point of poly.points) {
-                obj.push(point.x, point.y, z_top);
-            }
-        }
-
-        // bottom face (reversed to reverse normals)
-        for (let poly of bottom_face) {
-            for (let point of poly.points.reverse()) {
-                obj.push(point.x, point.y, z_bottom);
-            }
-        }
-
-        // outside wall
-        let rib = z - chamfer_top - chamfer_bottom;
-        obj.appendAll(this.ribbonZ(rib, z_side_bottom));
-        for (let inner of this.inner || []) {
-            // inside wall(s)
-            obj.appendAll(inner.ribbonZ(rib, z_side_bottom, true));
-        }
-
-        if (inv) {
-            for (let i=2; i<obj.length; i+=3) {
-                obj[i] -= z;
-            }
-        }
-
-        return obj;
+        return mesh.extrude(this, z, opt);
     }
 
-    // split long straight lines into segments no longer than max
-    // and return a new polygon
-    segment(max = 1) {
-        const newp = [];
-        const points = this.points;
-        const length = points.length;
-        const l0 = this.open ? length - 1 : length;
-        for (let i=0, p=points, l1=length, l2=l1+1; i<l0; i++) {
-            const p1 = p[i];
-            const p2 = p[(i + 1) % l1];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const dl = Math.sqrt(dx * dx + dy * dy);
-            newp.push(p1);
-            if (dl < max) {
-                continue;
-            }
-            const div = dl / max;
-            const fit = div | 0;
-            const add = fit - 1;
-            const ix = dx / fit;
-            const iy = dy / fit;
-            let ox = p1.x + ix;
-            let oy = p1.y + iy;
-            for (let i=0; i<add; i++) {
-                newp.push(newPoint(ox, oy, (p1.z + p2.z) / 2));
-                ox += ix;
-                oy += iy;
-            }
-        }
-        if (newp.length > length) {
-            return newPolygon().addPoints(newp.map(p => p.clone())).setOpenValue(this.open);
-        }
-        return this;
+    // split long straight lines into segments no longer than `max`
+    // and return a new polygon. optionally `mark` points with their
+    // derived segment start point (hinting for thin walls), `wrap`
+    // the poly first point by appending to the end (adaptive walls),
+    // or stopping segmentation at `maxoff`
+    segment(max = 1, mark = false, wrap = false, maxoff = Infinity) {
+        return path.segment(this, max, mark, wrap, maxoff);
     }
 
+    // only used by cam/op-pocket.js
+    // for any poly points closer than `dist`, replace them with their midpoint
     midpoints(dist = 0.01) {
-        const newp = [];
-        const points = this.points;
-        const length = points.length;
-        const l0 = this.open ? length - 1 : length;
-        let mod = 0;
-        for (let i=0, p=points; i<l0; i++) {
-            const p1 = p[i];
-            const p2 = p[(i + 1) % length];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const ln = Math.sqrt(dx * dx + dy * dy);
-            if (ln < dist) {
-                newp.push(p1.midPointTo(p2));
-                mod++;
-            } else {
-                newp.push(p1);
-            }
-        }
-        if (mod) {
-            return newPolygon().addPoints(newp.map(p => p.clone())).setOpenValue(this.open);
-        }
-        return this;
+        return path.midpoints(this, dist);
     }
 
+    // walk points noting z deltas and smoothing z sawtooth patterns
+    // used to smooth low-rez surface contouring
+    refine(passes = 0) {
+        return geo.refine(this, passes);
+    }
+
+    addDogbones(dist, reverse) {
+        return path.addDogbones(this, dist, reverse);
+    }
 }
 
-// use Slope.angleDiff() then re-test path mitering / rendering
-function slopeDiff(s1, s2) {
+export function slopeDiff(s1, s2) {
     const n1 = s1.angle;
     const n2 = s2.angle;
     let diff = n2 - n1;
@@ -2372,28 +1740,17 @@ function slopeDiff(s1, s2) {
     return Math.abs(diff);
 }
 
-function fromClipperPath(path, z) {
+export function fromClipperPath(path, z) {
     let poly = newPolygon(),
         i = 0,
         l = path.length;
     while (i < l) {
         // poly.push(newPoint(null,null,z,null,path[i++]));
-        poly.push(base.pointFromClipper(path[i++], z));
+        poly.push(pointFromClipper(path[i++], z));
     }
     return poly;
 }
 
-function newPolygon(points) {
+export function newPolygon(points) {
     return new Polygon(points);
 }
-
-Polygon.fromArray = function(array) {
-    return newPolygon().fromArray(array);
-};
-
-gapp.overlay(base, {
-    Polygon,
-    newPolygon
-});
-
-});

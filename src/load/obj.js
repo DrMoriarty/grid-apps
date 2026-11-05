@@ -2,35 +2,55 @@
 
 'use strict';
 
-(function() {
+import { util } from '../geo/base.js';
 
-let load = self.load = self.load || {};
-if (load.OBJ) return;
-
-gapp.register('load.obj');
-
-load.OBJ = {
-    parse,
-    parseAsync
-};
+/**
+ * Export vertex array(s) to OBJ format string
+ * @param {Array} recs - array of {file: string, varr: Float32Array} records
+ * @param {String} header - optional header comment
+ * @returns {String} OBJ format text
+ */
+export function encode(recs, header = '# Generated @ https://grid.space') {
+    let p = 1;
+    let obj = [header];
+    for (let rec of recs) {
+        let { file, varr } = rec;
+        obj.push(`g ${file || 'unnamed'}`);
+        for (let i=0; i<varr.length; p += 3) {
+            obj.push(`v ${varr[i++]} ${varr[i++]} ${varr[i++]}`);
+            obj.push(`v ${varr[i++]} ${varr[i++]} ${varr[i++]}`);
+            obj.push(`v ${varr[i++]} ${varr[i++]} ${varr[i++]}`);
+            obj.push(`f ${p} ${p+1} ${p+2}`);
+        }
+    }
+    return obj.join('\n');
+}
 
 /**
  * @param {String} text
  * @returns {Array} vertex face array
  */
-
-function parseAsync(text) {
+export function parseAsync(text) {
     return new Promise((resolve,reject) => {
         resolve(parse(text));
     });
 }
 
-function parse(text) {
-
+export function parse(text) {
     let lines = text.replaceAll(/ +/g,' ').split('\n').map(l => l.trim());
     let verts = [];
     let faces = [];
     let objs = [ faces ];
+
+    // Polyfill for appendAll if not present
+    if (!Array.prototype.appendAll) {
+        Object.defineProperty(Array.prototype, 'appendAll', {
+            value: function(arr) {
+                for (let v of arr) this.push(v);
+            },
+            enumerable: false
+        });
+    }
 
     for (let line of lines) {
         let toks = line.split(' ');
@@ -46,7 +66,7 @@ function parse(text) {
                 let tok = toks.map(f => parseInt(f.split('/')[0]));
                 if (tok.length > 3) {
                     const p = tok.map(t => verts[t-1]).flat();
-                    const t = base.util.triangulate(p, [], 3, true);
+                    const t = util.triangulate(p, [], 3, true);
                     const r = t.map(i => tok[i]);
                     for (let v of r) {
                         faces.appendAll(verts[v - 1]);
@@ -70,5 +90,3 @@ function parse(text) {
     }
     return objs;
 }
-
-})();

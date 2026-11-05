@@ -1,15 +1,16 @@
 // English language map. Other localization maps will
 // defer to English map for any missing key/value pairs
-self.kiri.lang['en'] =
-self.kiri.lang['en-us'] = {
+self.lang['en'] =
+self.lang['en-us'] = {
     // common keys and menus
     animate:        "animate",      // CAM animate button
     arrange:        "arrange",      // layout workspace objects
     axis:           "axis",         // left object scale pop menu
     back:           "back",
     clear:          "clear",        // clear workspace (remove all objects)
-    copy:           "copy",
     clone:          "clone",        // create duplicate
+    contents:       "contents",
+    copy:           "copy",
     delete:         "delete",
     detail:         "detail",
     done:           "done",
@@ -22,11 +23,13 @@ self.kiri.lang['en-us'] = {
     filter:         "filter",
     front:          "front",
     fullscreen:     "fullscreen",
-    help:           "help",
     ghost:          "ghost",        // left render pop menu (wireframe)
+    help:           "help",
     hide:           "hide",         // left render pop menu (invisible)
     home:           "home",
+    info:           "info",         // info menu
     import:         "import",
+    install:        "install",
     language:       "language",
     left:           "left",
     machines:       "machines",     // device or machine
@@ -39,6 +42,7 @@ self.kiri.lang['en-us'] = {
     profs:          "profiles",     // right menu "profiles"
     prefs:          "preferences",  // right menu "preferences"
     preview:        "preview",
+    quit:           "quit",         // quit/exit the application (electron)
     recent:         "recent",
     rename:         "rename",
     render:         "render",       // left render pop menu
@@ -58,10 +62,23 @@ self.kiri.lang['en-us'] = {
     tools:          "tools",        // CAM tool menu button
     top:            "top",
     type:           "type",         // CAM tool type
+    uninstall:      "uninstall",
     version:        "version",
     view:           "view",         // left view pop menu
     wire:           "wire",         // left render pop menu
     volume:         "volume",       // device build area
+    al_menu:        "align",
+    re_menu:        "render",
+    sx_menu:        "selection",
+    ed_menu:        "edit",
+    face_left:      "face left",
+    re_edgs:        "toggle edges",
+    al_menu:        "align",
+    re_menu:        "render",
+    sx_menu:        "selection",
+    ed_menu:        "edit",
+    face_left:      "face left",
+    re_edgs:        "toggle edges",
 
     acct_xpo:       ["make a backup of your device","and device profiles with the","option to include workspace","objects and positions"],
 
@@ -77,7 +94,8 @@ self.kiri.lang['en-us'] = {
     rc_xobj:        "export OBJ",
     rc_xstl:        "export STL",
     sb_info:        ["print speed","in mm/s"],
-    rc_merg:        "merge object meshes",
+    rc_merg:        "merge objects",
+    rc_splt:        "isolate objects",
 
     // DEVICE MENU and related dialogs
     dm_sldt:        "select a device type",
@@ -131,8 +149,6 @@ self.kiri.lang['en-us'] = {
     dv_xtab_l:      "extrusion moves absolute",
     dv_orgc_s:      "origin center",
     dv_orgc_l:      "bed origin center",
-    // dv_orgt_s:      "origin top",
-    // dv_orgt_l:      "part z origin top",
     dv_bedc_s:      "circular bed",
     dv_bedc_l:      "device bed is circular",
     dv_belt_s:      "belt bed",
@@ -157,6 +173,8 @@ self.kiri.lang['en-us'] = {
     dv_fext_l:      "file name extension",
     dv_lazr_s:      "enable laser",
     dv_lazr_l:      ["enable laser operations"],
+    dv_4tha_s:      "enable 4th axis",
+    dv_4tha_l:      ["enable 4th axis operations","aka indexed mode"],
 
     dv_dwll_s:      "dwell",
     dv_dwll_l:      "gcode dwell script",
@@ -164,6 +182,8 @@ self.kiri.lang['en-us'] = {
     dv_tool_l:      "tool change script",
     dv_sspd_s:      "spindle",
     dv_sspd_l:      "set spindle speed",
+    dv_resa_s:      "reset a",
+    dv_resa_l:      "reset a axis",
     dv_paus_s:      "pause",
     dv_paus_l:      "gcode pause script",
     dv_head_s:      "header",
@@ -224,6 +244,10 @@ self.kiri.lang['en-us'] = {
     mo_lazr:        "Laser Cut",
     mo_cncm:        "CNC Mill",
 
+    // MODE INFO (right panel)
+    mi_devi:        "Device",
+    mi_prof:        "Profile",
+
     // SETUP
     su_menu:        "setup",
     su_devi:        "Devices",
@@ -257,6 +281,11 @@ self.kiri.lang['en-us'] = {
     ws_menu:        "view",
     ws_save:        "Save",
     ws_cler:        "Clear",
+
+    // RIGHT PANEL
+    rp_objs:        "objects",
+    rp_rngs:        "ranges",
+    rp_opls:        "operation list",
 
     // OPTIONS
     op_menu:        "interface",
@@ -305,9 +334,14 @@ self.kiri.lang['en-us'] = {
     op_unit_l:      ["workspace units affects","speeds and distances"],
     op_anim_s:      "animate",
     op_anim_l:      ["animation mesh density","higher is more dense","takes more memory","and is slower"],
-    op_exgl_l:      ["show Grid:Local devices in export dialog","includes Grid:Bots and OctoPrint plugins"],
-    op_exgh_l:      ["legacy Grid:Host local network support"],
-    op_exop_l:      ["legacy OctoPrint local network support","Grid:Space OctoPrint plugin recommended"],
+    op_mani_s:      "manifold",
+    op_mani_l:      ["in stock indexed mode","use boolean visualiation","this is very expensive","and likely very slow"],
+    op_exop_s:      "remote host",
+    op_exop_l:      ["enable sending files to remote hosts","moonraker = klipper","octoprint"],
+    op_excp_s:      "code preview",
+    op_excp_l:      ["show start of gcode","in export dialog"],
+    op_exth_s:      "thumbnail",
+    op_exth_l:      ["embed print thumbnail in gcode"],
 
     lo_menu:        "layout",
 
@@ -320,8 +354,10 @@ self.kiri.lang['en-us'] = {
     pt_heal_l:      ["attempt to heal non-manifold meshes during slicing. may increase slicing time. enables a warning when non-manifold geometries are detected."],
     pt_thrd_s:      "threaded",
     pt_thrd_l:      ["use parallel processing when browser supports nested workers. may increase memory pressure on larger models. disable if you are getting out of memory errors"],
-    pt_assy_s:      "assembly",
-    pt_assy_l:      ["use web assembly when supported by browser. if you experience artifacts or memory errors, try disabling this."],
+    pt_assy_s:      "web asm",
+    pt_assy_l:      ["use web assembly when supported by browser. required for some cnc operations. if you experience artifacts or memory errors, try disabling this."],
+    pt_wgpu_s:      "web gpu",
+    pt_wgpu_l:      ["use web gpu when supported by browser. if you experience artifacts or memory errors, try disabling this."],
 
     xp_menu:        "exports",
 
@@ -331,14 +367,14 @@ self.kiri.lang['en-us'] = {
     se_save:        "save",
 
     // FDM LAYERS
-    sl_menu:        "paths",
+    sl_menu:        "layers",
     sl_angl_s:      "slice angle",
     sl_angl_l:      ["slice angle bias in degrees"],
     sl_lahi_s:      "layer height",
     sl_lahi_l:      ["height of each slice","layer in millimeters"],
     ad_minl_s:      "layer minimum",
     ad_minl_l:      ["adaptive min layer height","in millimeters","must be non-zero"],
-    ad_adap_s:      "adaptive",
+    ad_adap_s:      "adaptive height",
     ad_adap_l:      ["use adaptive layer heights","with 'layer height' as max","and 'layer min' as the min"],
     sl_ltop_s:      "top layers",
     sl_ltop_l:      ["number of solid layers at the top of the print or on flat areas facing up"],
@@ -355,12 +391,25 @@ self.kiri.lang['en-us'] = {
     ad_thin_l:      ["detect and fill gaps","between shell walls"],
 
     // FDM SHELLS
-    sl_line_s:      "shell width",
+    sl_line_s:      "line width",
     sl_line_l:      ["extrusion width in millimeters","0 = nozzle diameter"],
     sl_ordr_s:      "shell order",
     sl_ordr_l:      ["output shell order","inside to outside","or outside to inside","affects surface quality"],
-    sl_strt_s:      "layer start",
-    sl_strt_l:      ["layer starting point","last = last layer end","center = part center","origin = device origin"],
+    sl_strt_s:      "start point",
+    sl_strt_l:      ["layer starting point","last = where last layer ended","center = part center","origin = device origin","random = yolo"],
+    sl_ofin_s:      "shell inner offset",
+    sl_ofin_l:      ["inner hole perimeter offset","in millimeters"],
+    sl_ofot_s:      "shell outer offset",
+    sl_ofot_l:      ["outer wall perimeter offset","in millimeters"],
+
+    // FDM SOLID
+    fs_menu:        "solid fill",
+    fi_over_s:      "fill overlap",
+    fi_over_l:      ["overlap between shells and solid or sparse infill. can improve bonding to shells","as fraction of line width","0.0 - 1.0"],
+    fi_angl_s:      "start angle",
+    fi_angl_l:      ["starting angle in degrees","90 degrees added to ","each following layer","applies only to solid layers"],
+    fi_grow_s:      "expand",
+    fi_grow_l:      ["expand projected solids","can help with solid areas","over sparse infill areas","units in millimeters"],
 
     // FDM FILL
     fi_menu:        "sparse fill",
@@ -369,12 +418,6 @@ self.kiri.lang['en-us'] = {
     fi_pcnt_l:      ["fill density values","0.0 - 1.0"],
     fi_rept_s:      "fill repeat",
     fi_rept_l:      ["number of times to repeat","unchanged fill layers"],
-    fi_angl_s:      "solid angle",
-    fi_angl_l:      ["starting angle in degrees","90 degrees added to ","each following layer","applies only to solid layers"],
-    fi_grow_s:      "solid expand",
-    fi_grow_l:      ["expand projected solids","can help with solid areas","over sparse infill areas","units in millimeters"],
-    fi_over_s:      "fill overlap",
-    fi_over_l:      ["overlap with shell and other fill","for improved extrusion bonding","as fraction of nozzle diameter","0.0 - 2.0"],
     // fi_rate_s:      "print speed",
     fi_rate_l:      ["extrusion speed for infill","set to 0 to use default","output print speeds"],
 
@@ -434,30 +477,26 @@ self.kiri.lang['en-us'] = {
     // FDM SUPPORT
     sp_menu:        "support",
     sp_detect:      "detect",
+    sp_type_s:      "type",
+    sp_type_l:      ["automatic = detect","manual = paint on"],
     sp_dens_s:      "density",
     sp_dens_l:      ["fraction 0.0 - 1.0","recommended 0.15","0 to disable"],
-    sp_size_s:      "pillar size",
-    sp_size_l:      ["pillar width in millimeters","smaller values exponentially","increase detection times"],
     sp_offs_s:      "part offset",
     sp_offs_l:      ["offset from part","in millimeters"],
-    sp_gaps_s:      "gap layers",
-    sp_gaps_l:      ["number of layers","offset from part"],
+    sp_gaps_s:      "layer gap",
+    sp_gaps_l:      ["add a layer gap between support and part"],
     sp_span_s:      "max span",
     sp_span_l:      ["unsupported span that causes","a new support to be generated","in millimeters"],
-    sp_angl_s:      "max angle",
+    sp_angl_s:      "angle",
     sp_angl_l:      ["max overhang angle before","supporting pillar is generated","normal values 45-60","belt values 0-10"],
-    sp_area_s:      "min area",
-    sp_area_l:      ["minimum area for","a support column","in millimeters","smaller values will","slow detection"],
     sp_xpnd_s:      "expand",
     sp_xpnd_l:      ["expand support area","beyond part boundary","in millimeters"],
-    sp_grow_s:      "grow",
-    sp_grow_l:      ["grow support column to fill small gaps","in millimeters"],
-    sp_nozl_s:      "extruder",
-    sp_nozl_l:      ["in multi-extruder systems","the extruder to use for","support material"],
+    sp_nozl_s:      "tool",
+    sp_nozl_l:      ["in multi-extruder systems","the toolhead to use for","support material"],
     sp_outl_s:      "enclosed",
     sp_outl_l:      ["enclose support pattern","inside a perimeter shell"],
-    sp_auto_s:      "automatic",
-    sp_auto_l:      ["enable generated supports","using at-slice-time geometry","supports will only appear","after slicing completes"],
+    sp_tree_s:      "tree type",
+    sp_tree_l:      ["use tree type support structure"],
 
     // CNC COMMON terms
     cc_tool:        "tool",
@@ -474,9 +513,11 @@ self.kiri.lang['en-us'] = {
     cc_sdwn_s:      "step down",
     cc_sdwn_l:      ["step down depth","for each pass","in workspace units","0 to disable"],
     cc_thru_s:      "cut thru",
-    cc_thru_l:      ["additional cut depth below trace bottom"],
+    cc_thru_l:      ["allow trace depth to extend thru","the bottom of the selected area","use with negative Z bottom"],
     cc_offd_s:      "offset",
     cc_offd_l:      ["overrides default offset distance (which is the tool radius) when set to any value but zero"],
+    cc_offz_s:      "offset z",
+    cc_offz_l:      ["shift add or subtract Z values by this amount","in workspace units"],
     cc_feed_s:      "feed rate",
     cc_feed_l:      ["max cutting speed in","workspace units / minute"],
     cc_plng_s:      "plunge rate",
@@ -488,10 +529,10 @@ self.kiri.lang['en-us'] = {
 
     // CNC COMMON
     cc_menu:        "limits",
-    cc_rapd_s:      "xy feed",
-    cc_rapd_l:      ["max xy moves feedrate","in workspace units / minute"],
-    cc_rzpd_s:      "z feed",
-    cc_rzpd_l:      ["max z moves feedrate","in workspace units / minute"],
+    cc_rapd_s:      "feed rate",
+    cc_rapd_l:      ["max xy cutting feedrate","in workspace units / minute"],
+    cc_rzpd_s:      "plunge rate",
+    cc_rzpd_l:      ["max z cutting plunge rate","in workspace units / minute"],
 
     // CNC LEVELING
     cc_loff_s:      "z offset",
@@ -513,35 +554,37 @@ self.kiri.lang['en-us'] = {
     cr_clst_l:      ["in indexed mode, clear entire stock area, not just to part periemter"],
     cr_clrt_s:      "clear top",
     cr_clrt_l:      ["run a clearing pass over","the bounding area of the part","at z = 0"],
-    cr_clrp_s:      "clear voids",
-    cr_clrp_l:      ["mill out through pockets","instead of just the outline"],
-    cr_clrf_s:      "clear faces",
-    cr_clrf_l:      ["interpolate step down to","clear any detected flat areas"],
     cr_olin_s:      "inside only",
     cr_olin_l:      ["limit cutting to","inside part boundaries"],
+    cr_clrf_s:      "clear faces",
+    cr_clrf_l:      ["add additional clearing passes","for detected z planar flat areas"],
+    cr_spir_s:      "spiral",
+    cr_spir_l:      ["stitch offset rings into a single","continuous morphing spiral to avoid","machine stops between rings"],
+    cr_spirf_s:     "spiral finish ring",
+    cr_spirf_l:     ["append a final full closed ring","along the wall allowance contour","after the spiral"],
 
     // CNC OUTLINE
     co_menu:        "outline",
     co_merg_s:      "merge overlap",
     co_merg_l:      ["merge overlapping lines to prevent overcutting into adjacent solids"],
+    co_igno_s:      "ignore part",
+    co_igno_l:      ["do not constrain cutting areas","to part boundaries. this allows","using the part as negative space"],
     co_dogb_s:      "dogbones",
     co_dogb_l:      ["insert dogbone cuts","into inside corners"],
     co_dogr_s:      "reverse bones",
     co_dogr_l:      ["reverse dogbone direction"],
-    co_clrt_s:      "clear top",
-    co_clrt_l:      ["cut starting at the top of stock","when stock is enabled"],
     co_wide_s:      "wide cutout",
     co_wide_l:      ["widen outside cutout paths","for deep cuts in hard material"],
-    co_olin_s:      "inside only",
-    co_olin_l:      ["limit cutting to","inside part boundaries"],
-    co_olot_s:      "outside only",
-    co_olot_l:      ["limit cutting to","exterior part boundaries","which can be thought of","as the shadow outline"],
     co_omit_s:      "omit through",
     co_omit_l:      "eliminate thru holes",
     co_omvd_s:      "omit pocket",
     co_omvd_l:      "eliminate interior pockets",
     co_olen_s:      "enable",
     co_olen_l:      "enabled outline cutting",
+    co_olin_s:      "inside only",
+    co_olin_l:      ["limit cutting to","inside part boundaries"],
+    co_olot_s:      "outside only",
+    co_olot_l:      ["limit cutting to","exterior part boundaries","which can be thought of","as the shadow outline"],
 
     // CNC CONTOUR
     cn_menu:        "contour",
@@ -559,6 +602,10 @@ self.kiri.lang['en-us'] = {
     cf_linx_l:      "linear y-axis finishing",
     cf_liny_s:      "enable x pass",
     cf_liny_l:      "linear x-axis finishing",
+    cf_clip_s:      "clip to stock",
+    cf_clip_l:      ["contour op only","clip cutting paths","to defined stock"],
+    cf_aste_s:      "angle step",
+    cf_aste_l:      ["degrees between radial secant passes. the arc stepover between adjacent rays grows with radius (inherent to radial finishing)"],
 
     // CNC TRACE
     cu_menu:        "trace",
@@ -576,10 +623,10 @@ self.kiri.lang['en-us'] = {
     cp_refi_l:      ["number of refining passes to perform on contoured polylines. meant to address Z delta sawtoothing caused by faced geometries whereas smoothing handles XY. values > 10 work well for gently contoured geometries with significant Z movement."],
     cp_cont_s:      "contour",
     cp_cont_l:      ["ignore interior voids and features"],
-    cp_engr_s:      "engrave",
-    cp_engr_l:      ["sets up a single pass around the perimeter of the selected area. also useful for 3D laser marking"],
     cp_outl_s:      "outline only",
     cp_outl_l:      ["ignore interior voids and features"],
+    cp_shad_s:      "shadow",
+    cp_shad_l:      ["select part shadow as work area. overrides selected edges and surface areas"],
 
     // CNC DRILLING
     cd_menu:        "drill",
@@ -591,8 +638,6 @@ self.kiri.lang['en-us'] = {
     cd_dwll_l:      ["dwell time","between plunges in","in milliseconds"],
     cd_lift_s:      "drill lift",
     cd_lift_l:      ["lift between plunges","after dwell period","in workspace units","0 to disable"],
-    cd_regi_s:      "register",
-    cd_regi_l:      ["drill registration holes","for double-sided parts","independent of enable","drilling but uses same","tool and settings"],
     cd_thru_s:      "z extend",
     cd_thru_l:      ["extend downward cut through stock","in workspace units"],
     cd_dtru_s:      "drill through",
@@ -608,6 +653,32 @@ self.kiri.lang['en-us'] = {
     cd_sela_s:    "Select Matching Diameter",
     cd_sela_l:    ["select all holes that", "match selected tool diameter"],
 
+    //CNC Registration
+    cd_regi_s:      "register",
+    cd_regi_l:      ["drill registration holes","for double-sided parts","independent of enable","drilling but uses same","tool and settings"],
+    cd_rego_s:      "part offset",
+    cd_rego_l:      ["offset of hole center","from part bounding box","in workspace units"],
+
+    // CNC HELICAL tolpath
+    ch_menu:        "helical",
+    ch_sdwn_s:      "step down (pitch)",
+    ch_sdwn_l:      ["z-distance","per revolution","in workspace units","(inverse of threads per unit)", "0 to disable"],
+    ch_fsta_s:      "force start angle",
+    ch_fsta_l:      ["override start angle","defaults to closest point to tool"],
+    ch_stra_s:      "start angle",
+    ch_stra_l:      ["start angle of helix","in degrees ccw of +x axis"],
+    ch_selc_l:      ["select a cylinder face", "inner holes that are too small","will be ignored."],
+    ch_fini_s:      "bottom finish pass",
+    ch_fini_l:      ["trace a circle at bottom of helix","used for hole clearing"],
+    ch_entr_s:      "enter from center",
+    ch_entr_l:      ["start cut from center of cylinder","gently arcing in horisontaly", "instead of plunging"],
+    ch_ento_s:      "center entry offset",
+    ch_ento_l:      ["offset from path for curved entry","usually thread depth if threadmilling","in workspace units","0 for a linear entry"],
+    ch_rvrs_s:      "reverse",
+    ch_rvrs_l:      ["reverse helical z-axis direction","low-Z to high-Z when checked","useful for thread milling","not recomended for other operations"],
+    ch_clkw_s:      "clockwise",
+    ch_clkw_l:      ["reverse helical rotation around cylinder","clockwise when checked"],
+
     // CNC FLIP
     cf_menu:        "flip",
     cf_nvrt_s:      "z bottom",
@@ -622,6 +693,10 @@ self.kiri.lang['en-us'] = {
     ci_face_l:      "select face to rotate facing up",
     ci_line_s:      "linear",
     ci_line_l:      "make linear passes along X then rotate Y",
+    ci_laso_s:      "offset start",
+    ci_laso_l:      ["x offet from left of part. negative values are outside of the part. in workspace units"],
+    ci_laeo_s:      "offset end",
+    ci_laeo_l:      ["x offet from right of part. negative values are outside of the part. in workspace units"],
 
     // CNC LASER On/Off Operations (Carvera)
     cl_powr_s:      "power",
@@ -659,6 +734,22 @@ self.kiri.lang['en-us'] = {
     ct_midl_l:      ["use midline of tab","instead of z bottom","for double-sided work"],
     ct_nabl_s:      "auto",
     ct_nabl_l:      ["auto generate radial tabs","projected from part center","using count and angle offset"],
+
+    // CNC LATHE
+    cl_xpnd_s:      "expand",
+    cl_xpnd_l:      ["grow starting radius for step down. radius is defined as the highest Z point measured from the X axis center of the part"],
+
+    // CNC AREA OP
+    ca_pat_s:       "pattern",
+    ca_pat_l:       ["path pattern: linear (raster scan lines), offset (contour rings),","spiral (continuous archimedean spiral - no retracts,","constant tool engagement on curved surfaces)"],
+    ca_altr_s:      "alternate",
+    ca_altr_l:      "alternate direction of travel lines (zigzag)",
+    ca_sang_s:      "step angle",
+    ca_sang_l:      "crossing angle on the XY plane for contour lines",
+    ca_wall_s:      "walls",
+    ca_wall_l:      ["perform a single pass along vertical faces. leave interior spaces. similar to outline operation"],
+    ca_fini_s:      "finish cut",
+    ca_fini_l:      "cutting path that follows the contour of the final part. allows for precise step over when clearing a larger area.",
 
     // OUTPUT
     ou_menu:        "output",
@@ -733,8 +824,10 @@ self.kiri.lang['en-us'] = {
     ou_exml_l:      ["extrusion multiplier","0.0 - 2.0"],
     ou_fanl_s:      "fan on layer",
     ou_fanl_l:      ["layer # to turn on fan","layers start at 0"],
-    ou_fans_s:      "fan speed",
+    ou_fans_s:      "fan on speed",
     ou_fans_l:      "0 - 255",
+    ou_layt_s:      "min layer time",
+    ou_layt_l:      ["minimum allowable layer print time in seconds. printing will be slowed if the layer would outerwise complete in fewer seconds.","0 = disabled"],
 
     // OUTPUT CAM
     ou_toll_s:      "precision",
@@ -755,12 +848,12 @@ self.kiri.lang['en-us'] = {
     ou_zbot_l:      ["offset from stock bottom","to limit cutting depth","in workspace units"],
     ou_zclr_s:      "z clearance",
     ou_zclr_l:      ["safe travel offset","from top of part","in workspace units"],
-    ou_ztru_s:      "z thru",
-    ou_ztru_l:      ["extend cutout pass down","in workspace units"],
-    ou_conv_s:      "conventional",
-    ou_conv_l:      ["milling direction","uncheck for 'climb'"],
+    // ou_ztru_s:      "z thru",
+    // ou_ztru_l:      ["extend cutout pass down","in workspace units"],
     ou_depf_s:      "depth first",
     ou_depf_l:      ["optimize pocket cuts","with depth priority"],
+    ou_inrf_s:      "inner first",
+    ou_inrf_l:      ["always cut inner to outer"],
     ou_toin_s:      "tool init",
     ou_toin_l:      "add tool change with first operation. when disabled, the gcode assumes the first tool is loaded and offset probed",
     ou_forz_s:      "force z max",
@@ -771,6 +864,8 @@ self.kiri.lang['en-us'] = {
     ou_feng_l:      "speed scale (0.1-1) when endmill is fully engaged on a new cut. stepped over cuts when the endmill is less than fully engaged run at a factor of 1 relative to output speed. typically this relates to roughing or any operation with step over.",
     ou_eang_s:      "ease angle",
     ou_eang_l:      "descent angle for ease down in degrees",
+    ou_dire_s:      "milling",
+    ou_dire_l:      ["milling direction","climb, conventional"],
 
     // CAM STOCK
     cs_menu:        "stock",
@@ -782,8 +877,6 @@ self.kiri.lang['en-us'] = {
     cs_hght_l:      ["height (z) in workspace units","0 defaults to part size"],
     cs_offs_s:      "offset",
     cs_offs_l:      ["use width, depth, height","as offsets from max","part size on platform"],
-    cs_clip_s:      "clip to",
-    cs_clip_l:      ["rough and outline","clip cutting paths","to defined stock"],
     cs_ishg_s:      "show grid",
     cs_ishg_l:      ["show platform grid in indexed mode"],
     cs_indx_s:      "indexed",
@@ -804,7 +897,7 @@ self.kiri.lang['en-us'] = {
     or_offy_l:      "origin offset Y",
 
     // CAM ORIGIN
-    co_menu:        "origin",
+    or_menu:        "origin",
     co_offx_s:      "offset x",
     co_offx_l:      ["offset origin along x axis","in workspace units"],
     co_offy_s:      "offset y",
@@ -814,7 +907,7 @@ self.kiri.lang['en-us'] = {
 
     // FDM ADVANCED
     ad_menu:        "expert",
-    ad_rdst_s:      "retract dist",
+    ad_rdst_s:      "retract distance",
     ad_rdst_l:      ["amount to retract filament","for long moves. in millimeters"],
     ad_rrat_s:      "retract rate",
     ad_rrat_l:      ["speed of filament","retraction in mm/s"],
@@ -824,15 +917,19 @@ self.kiri.lang['en-us'] = {
     ad_rdwl_l:      ["time between re-engaging","filament and movement","in milliseconds"],
     ad_scst_s:      "shell coast",
     ad_scst_l:      ["non-printing end","of perimeter shells","in millimeters"],
-    ad_msol_s:      "min solid",
-    ad_msol_l:      ["minimum area (mm^2)","required to keep solid","must be > 0.1"],
+    ad_msol_s:      "min area",
+    ad_msol_l:      ["minimum area (mm^2)","bridges and flats less than this are culled"],
+    ad_mthk_s:      "min thick",
+    ad_mthk_l:      ["minimum area thickness","which is a ratio of area to perimeter","for layer differences which are used","to find bridges and flat areas","values from 0.0 - 0.5 work best"],
     ad_mins_s:      "min speed",
     ad_mins_l:      ["minimum speed","for short segments"],
+    ad_maxf_s:      "max flowrate",
+    ad_maxf_l:      ["maximum volumetric flowrate supported by this print head and filament","in millimeters^3 / second"],
+    ad_scar_s:      "scarf length",
+    ad_scar_l:      ["ease up length for scarf joint. disables arc detection","0 = disabled"],
     ad_spol_s:      "short path",
     ad_spol_l:      ["polygons shorter than this","will have their print speed","scaled down to min speed","in millimeters"],
-    ad_arct_s:      "arc tolerance",
-    ad_arct_l:      ["convert faceted lines to arcs","center point drift tolerance","when matching arc points","consider values around 0.15","in millimeters","0 to disable"],
-    ad_zhop_s:      "z hop dist",
+    ad_zhop_s:      "z hop distance",
     ad_zhop_l:      ["amount to raise z","on retraction moves","in millimeters","0 to disable"],
     ad_abkl_s:      "anti-backlash",
     ad_abkl_l:      ["for better flat surface finish","use micro-movements to cancel","backlash in solid layer output","in millimeters","0 to disable","if your firmware has M425","put that in the gcode header","and leave this as 0"],
@@ -842,8 +939,8 @@ self.kiri.lang['en-us'] = {
     ad_altr_l:      ["alternate shell winding order","clockwise / counter-clockwise","may reduce warping in thin areas","and help with belt edge adhesion"],
     ad_zint_s:      "interleave z",
     ad_zint_l:      ["interleave Z heights with odd number shells"],
-    ad_lret_s:      "layer retract",
-    ad_lret_l:      ["force filament retraction","between layers"],
+    ad_lret_s:      "force retract",
+    ad_lret_l:      ["force filament retraction between layers"],
     ad_agap_s:      "avoid gaps",
     ad_agap_l:      ["route around gaps rather","than perform a retract","when possible"],
     ad_play_s:      "polish layers",
@@ -852,12 +949,22 @@ self.kiri.lang['en-us'] = {
     ad_pspd_l:      ["polishing speed","in millimeters / second"],
     ad_purg_s:      "purge tower",
     ad_purg_l:      ["purge tower area in mm^2","for multi extruder setups","0 = disabled"],
+    ad_sold_s:      "solidify",
+    ad_sold_l:      ["remove inner voids","treat the model as a solid"],
 
     // CAM EXPERT
     cx_fast_s:      "skip shadow",
     cx_fast_l:      ["disable overhang detection","can be faster and use less","memory with complex models","but fails with overhangs","try enabling if slicing","hangs during shadowing"],
     cx_true_s:      "true shadow",
     cx_true_l:      ["computationally correct shadow","will be slower but produce","better cuts for complex parts"],
+    cx_smof_s:      "rounded corners",
+    cx_smof_l:      ["sharp outside angles","are converted to arcs"],
+    cx_arce_s:      "arc output",
+    cx_arce_l:      ["EXPERIMENTAL: enable path to arc conversion"],
+    cx_arct_s:      "arc tolerance",
+    cx_arct_l:      ["convert cicrular paths to arcs;","center point drift tolerance","when matching arc points","consider values around 0.15","in mm, or 0.006 inches;","High values may cause","unexpected behavior","0 to disable"],
+    cx_arcr_s:      "arc resolution",
+    cx_arcr_l:      ["change in line direction","aceptible in an arc","consider values around 5","High values may cause","unexpected behavior",],
 
     // FDM GCODE
     ag_menu:        "gcode",
@@ -908,8 +1015,8 @@ self.kiri.lang['en-us'] = {
     sa_iflw_l:      ["hatch line width","in millimeters"],
 
     sa_supp_m:      "support",
-    sa_slyr_s:      "base layers",
-    sa_slyr_l:      ["base support layers","value range 0-10"],
+    sa_slyr_s:      "raft layers",
+    sa_slyr_l:      ["support raft layers","0 disables raft","value range 0-100"],
     sa_slgp_s:      "gap layers",
     sa_slgp_l:      ["number of layers between","raft and bottom of object"],
     sa_sldn_s:      "density",
@@ -918,11 +1025,34 @@ self.kiri.lang['en-us'] = {
     sa_slsz_l:      ["max size of a","support pillar","in millimeters"],
     sa_slpt_s:      "points",
     sa_slpt_l:      ["number of points in","each support pillar","in millimeters"],
+    sa_slan_s:      "angle",
+    sa_slan_l:      ["max branch angle","from vertical","5-45 degrees"],
     sl_slen_l:      "enable supports",
 
     sa_outp_m:      "output",
     sa_opzo_s:      "z offset",
     sa_opzo_l:      ["z layer offset","almost always 0.0","0.0-1.0 in millimeters"],
     sa_opaa_s:      "anti alias",
-    sa_opaa_l:      ["enable anti-aliasing","produces larger files","can blur details"]
+    sa_opaa_l:      ["enable anti-aliasing","produces larger files","can blur details"],
+
+    // EXPORT DIALOG
+    ex_job:         "job",
+    ex_fnam:        "file name",
+    ex_fsiz:        "file size (bytes)",
+    ex_time:        "time estimate (h:m:s)",
+    ex_matl:        "material",
+    ex_dens:        "filament density (g/cm^3)",
+    ex_fuse:        "filament used (mm)",
+    ex_wght:        "printed weight (g)",
+    ex_gcpv:        "gcode preview",
+    ex_dwnl:        "download",
+    ex_bamb:        "send to bambu",
+    ex_octo:        "remote host",
+    ex_host:        "host",
+    ex_akey:        "key",
+    ex_type:        "remote print type",
+    ex_rsnm:        "resin used ML",
+    ex_layr:        "layers",
+    ex_ptim:        "print time",
+    ex_segs:        "segments"
 };

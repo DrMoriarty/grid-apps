@@ -1,18 +1,13 @@
 /** Copyright Stewart Allen -- All Rights Reserved */
 
-"use strict";
-
-gapp.register("data.index", [], (root, exports) => {
-
-const { data } = root;
-
-data.Index = IDBStore;
-
-data.open = function() {
-    return new IDBStore(...arguments);
-};
-
 // https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API
+
+export const data = {
+    Index: IDBStore,
+    open() {
+        return new IDBStore(...arguments);
+    }
+};
 
 let IDB, IRR, local = null;
 
@@ -173,7 +168,7 @@ SP.init = function(options = {}) {
         request = IDB.open(name, this.version);
 
         request.onupgradeneeded = function(event) {
-            let db = storage.db = request.result;
+            let db = request.result;
             let current = [...db.objectStoreNames];
             let stores = storage.stores;
             // add missing stores
@@ -189,13 +184,12 @@ SP.init = function(options = {}) {
             // remove obsolete stores
             for (let curr of current) {
                 if (stores.indexOf(curr) < 0) {
-                    storage.db.deleteObjectStore(curr);
+                    db.deleteObjectStore(curr);
                     console.log({index_dropped: curr});
                 }
             }
-            event.target.transaction.oncomplete = function(event) {
-                storage.runQueue();
-            };
+            // allow transactions
+            storage.db = db;
         };
 
         request.onsuccess = function(event) {
@@ -222,6 +216,7 @@ SP.runQueue = function() {
         let i = 0, q = this.queue, e;
         while (i < q.length) {
             e = q[i++];
+            // console.log('runQ', i, ...e);
             switch (e.shift()) {
                 case 'iterate': this.iterate(...e); break;
                 case 'keys': this.keys(...e); break;
@@ -257,7 +252,11 @@ SP.put = function(key, value, callback, store = this.current) {
             req.onerror = function(event) { callback(false) };
         }
     } catch (e) {
-        console.log(e);
+        if (e.name === 'InvalidStateError') {
+            console.log({ putRetry: key });
+            return this.queue.push(['put', key, value, callback, store]);
+        }
+        console.log(e.name, e);
         if (callback) callback(false);
     }
 };
@@ -280,6 +279,10 @@ SP.get = function(key, callback, store = this.current) {
             req.onerror = function(event) { callback(null) };
         }
     } catch (e) {
+        if (e.name === 'InvalidStateError') {
+            console.log({ getRetry: key });
+            return this.queue.push(['get', key, callback, store]);
+        }
         console.log(e);
         if (callback) callback(null);
     }
@@ -319,4 +322,5 @@ SP.clear = function(key, store = this.current) {
         .objectStore(store).clear();
 };
 
-});
+export const open = data.open;
+export const Index = IDBStore;

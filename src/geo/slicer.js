@@ -1,23 +1,18 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
-"use strict";
-
 /**
  * basic slice and line connection. In future, replace kiri's fdm and cam slicers
  * with wrappers on this one.
  */
-// dep: geo.base
-// dep: geo.line
-// dep: geo.point
-// dep: geo.polygon
-// dep: geo.polygons
-gapp.register("geo.slicer", [], (root, exports) => {
 
-const { base } = root;
-const { config, util, polygons } = base
-const { newOrderedLine, newPolygon, newPoint } = base;
+import { base } from './base.js';
+import { newOrderedLine } from './line.js';
+import { newPolygon } from '../geo/polygon.js';
+import { polygons } from '../geo/polygons.js';
+import { newPoint } from '../geo/point.js';
+import { config } from '../geo/base.js';
 
-const POLY = base.polygons;
+const epsilon = 10e-5;
 
 function dval(v, dv) {
     return v !== undefined ? v : dv;
@@ -32,7 +27,7 @@ function dval(v, dv) {
  * @param {Point[]} points vertex array
  * @param {Object} options slicing parameters
  */
-async function slice(points, options = {}) {
+export async function slice(points, options = {}) {
     let zMin = options.zMin || 0,
         zMax = options.zMax || 0,
         zInc = options.zInc || 0,
@@ -46,6 +41,7 @@ async function slice(points, options = {}) {
         zSum = 0.0,             // sanity check that points enclose non-zere volume
         buckets = [],           // banded/grouped faces to speed up slice/search
         overlapMax = options.overlap || 0.75,
+        bucketMin = options.bucketMin ?? 1,
         bucketMax = options.bucketMax || 100,
         onupdate = options.onupdate || function() {},
         sliceFn = dval(options.slicer, sliceZ),
@@ -72,7 +68,6 @@ async function slice(points, options = {}) {
         for (i = 0; i < points.length; i++) {
             points[i] = points[i].round(3);
         }
-
     }
 
     // gather z-index stats
@@ -83,10 +78,10 @@ async function slice(points, options = {}) {
         // used to calculate buckets (rough sum of z span)
         zSum += (Math.abs(p1.z - p2.z) + Math.abs(p2.z - p3.z) + Math.abs(p3.z - p1.z));
         // use co-flat and co-line detection to adjust slice Z
-        if (p1.z === p2.z && p2.z === p3.z && p1.z >= zMin) {
+        if (Math.abs(p1.z - p2.z) < epsilon && Math.abs(p2.z - p3.z) < epsilon && p1.z >= zMin) {
             // detect faces co-planar with Z and sum the enclosed area
             let zkey = p1.z,
-                area = Math.abs(util.area2(p1,p2,p3)) / 2;
+                area = Math.abs(base.util.area2(p1,p2,p3)) / 2;
             if (!zFlat[zkey]) {
                 zFlat[zkey] = area;
             } else {
@@ -144,7 +139,7 @@ async function slice(points, options = {}) {
     let zSpan = zMax - zMin;
     let zSpanAvg = zSum / points.length;
     let bucketCount = options.bucket !== false ?
-        Math.min(bucketMax, Math.max(1, Math.floor(zSpan / zSpanAvg))) : 1;
+        Math.min(bucketMax, Math.max(bucketMin, Math.floor(zSpan / zSpanAvg))) : 1;
 
     zScale = 1 / (zMax / bucketCount);
 
@@ -217,7 +212,6 @@ async function slice(points, options = {}) {
         let count = 0;
         let opt = { ...options, zMin, zMax, zIndexes };
         let ps = [];
-
         for (let i = 0, l = buckets.length; i < l; i++) {
             let bucket = buckets[i];
             let { points, slices } = bucket;
@@ -252,7 +246,7 @@ async function slice(points, options = {}) {
  * @param {number} z offset
  * @param {Obejct} where
  */
-function checkUnderOverOn(p, z, where) {
+export function checkOverUnderOn(p, z, where) {
     let delta = p.z - z;
     if (Math.abs(delta) < config.precision_slice_z) { // on
         where.on.push(p);
@@ -272,7 +266,7 @@ function checkUnderOverOn(p, z, where) {
  * @param {number} z offset
  * @returns {Point} intersection point
  */
-function intersectPoints(over, under, z) {
+export function intersectPoints(over, under, z) {
     let ip = [];
     for (let i = 0; i < over.length; i++) {
         for (let j = 0; j < under.length; j++) {
@@ -285,7 +279,7 @@ function intersectPoints(over, under, z) {
 /**
  * Ensure points are unique with a cache/key algorithm
  */
-function getCachedPoint(phash, p) {
+export function getCachedPoint(phash, p) {
     let cached = phash[p.key];
     if (!cached) {
         phash[p.key] = p;
@@ -307,7 +301,7 @@ function getCachedPoint(phash, p) {
  * @param {boolean} [edge]
  * @returns {Line}
  */
-function makeZLine(phash, p1, p2, coplanar, edge) {
+export function makeZLine(phash, p1, p2, coplanar, edge) {
     p1 = getCachedPoint(phash, p1);
     p2 = getCachedPoint(phash, p2);
     let line = newOrderedLine(p1,p2);
@@ -322,7 +316,7 @@ function makeZLine(phash, p1, p2, coplanar, edge) {
  *
  * @param {number} z
  */
-async function sliceZ(z, points, options = {}) {
+export async function sliceZ(z, points, options = {}) {
     if (Array.isArray(z)) {
         return Promise.all(z.map(z => sliceZ(z, points, options)));
     }
@@ -342,9 +336,9 @@ async function sliceZ(z, points, options = {}) {
         p2 = points[i++];
         p3 = points[i++];
         let where = {under: [], over: [], on: []};
-        checkUnderOverOn(p1, z, where);
-        checkUnderOverOn(p2, z, where);
-        checkUnderOverOn(p3, z, where);
+        checkOverUnderOn(p1, z, where);
+        checkOverUnderOn(p2, z, where);
+        checkOverUnderOn(p3, z, where);
         if (where.under.length === 3 || where.over.length === 3) {
             // does not intersect (all 3 above or below)
         } else if (where.on.length === 2) {
@@ -386,16 +380,16 @@ async function sliceZ(z, points, options = {}) {
 
     let rval = { z, lines };
     if (groupFn) {
-        let groups = groupFn(lines, z, options);
+        let groups = groupFn(lines, options);
         if (options.xor) {
-            groups = POLY.xor(groups);
+            groups = polygons.xor(groups);
         }
         if (options.union) {
             let points = groups.map(p => p.length);
             if (points.length > 1) points = points.reduce((a,b) => a + b);
             // simplistic healing of non-manifold meshes
             let opt = { x: 1 };
-            let union = POLY.union(POLY.nest(groups), 0.1, true, opt);
+            let union = polygons.union(polygons.nest(groups), 0.1, true, opt);
             // fall back to xor'ing polygons that might overlap
             // when one does not cleanly contain the other and we lose lots of points
             // trigger when 2 polygons and we lose > 40% of points in the union
@@ -409,14 +403,14 @@ async function sliceZ(z, points, options = {}) {
             }
             // track total poly length changes to determine if healed
             rval.changes = opt.changes;
-            groups = POLY.flatten(union, null, true);
+            groups = polygons.flatten(union, null, true);
         }
         rval.groups = groups;
     }
 
     // look for driver-specific slice post-processor
     if (options.post) {
-        let fn = base.slicePost[options.post];
+        let fn = slicer.slicePost[options.post];
         if (fn) fn(rval, options);
     }
 
@@ -454,12 +448,12 @@ async function sliceZ(z, points, options = {}) {
  * interesection.  Eliminate used points and repeat.  Unjoined lines
  * are permitted and handled after all other cases are handled.
  *
- * @param {Line[]} input
- * @param {number} [index]
+ * @param {Line[]} input array of lines (soup)
+ * @param {Object} opt options
  * @returns {Array}
  */
-function sliceConnect(input, z, opt = {}) {
-    let { debug, both } = opt;
+export function sliceConnect(input, opt = {}) {
+    let { both, debug, dirty, strict } = opt;
 
     if (both) {
         if (debug) console.log('unable to connect lines sliced with "both" option');
@@ -472,8 +466,8 @@ function sliceConnect(input, z, opt = {}) {
         output = [],
         connect = [],
         emitted = 0,
-        forks = false,
-        frays = false,
+        forks = [], // points which contain forks
+        stubs = [], // dead end points
         bridge = config.bridgeLineGapDistance,
         bridgeMax = config.bridgeLineGapDistanceMax,
         p1, p2, gl;
@@ -486,11 +480,17 @@ function sliceConnect(input, z, opt = {}) {
         return p;
     }
 
+    // add p2 to p1's group array
     function addConnected(p1, p2) {
+        if (p1 === p2) {
+            // console.log('drop same point connect');
+            return;
+        }
         if (!p1.group) p1.group = [ p2 ];
-        else p1.group.push(p2);
+        else p1.group.addOnce(p2);
     }
 
+    // calculate and store array perimeter length
     function perimeter(array) {
         if (!array.perimeter) {
             array.perimeter = newPolygon().addPoints(array).perimeter();
@@ -498,142 +498,230 @@ function sliceConnect(input, z, opt = {}) {
         return array.perimeter;
     }
 
-    /**
-     * follow points through connected lines to form candidate output paths
-     */
-    function findNextPath(point, current, branches, depth = 1) {
-        let path = [];
-        if (current) {
-            current.push(path);
+    // calculate and store array area
+    function area(array) {
+        if (!array.area) {
+            array.area = newPolygon().addPoints(array).area();
         }
+        return array.area;
+    }
+
+    function debug_points() {
+        let clone = points.map(p => {
+            let pc = p.clone();
+            pc.group = p.group.slice();
+            return pc;
+        });
+        clone.sort((a,b) => a._key < b._key ? -1 : 1);
+        console.log({ points: clone });
+    }
+
+    /**
+     * construct a new path starting at point (may be a branch)
+     * @param {Point} point current point we're following
+     * @param {Point} base first point for start of all paths
+     * @param {Array} branches collected branches when recursing
+     * @param {Integer} depth recursion depth
+     */
+    function findNextPath(point, { base, branches, depth, path } = { }) {
+        let marked = [];
+
+        base = base ?? point;
+        branches = branches ?? [];
+        depth = depth ?? 1;
+        path = path ?? [];
+
+        branches.push(path);
 
         for (;;) {
-            // prevent point re-use
+            // if the next point is the root, emit closed path
+            if (point === base && (path.length || branches.length > 1)) {
+                if (debug) console.log('term at start');
+                break;
+            }
+
+            // we can't pass thru a used point
+            if (point.del) {
+                if (debug) console.log('term at used point');
+                break;
+            }
+
+            // prevent passing through the same point twice in a search
             point.del = true;
+
             // add point to path
             path.push(point);
 
+            // track marked points so they can be cleared
+            marked.push(point);
+
+            // find unused "next" points
             let links = point.group.filter(p => !p.del);
 
-            // no need to recurse at the start
-            if (links.length === 2 && depth === 1) {
-                point = links[0];
-                // if (debug) console.log({start_mid: point, depth});
-                continue;
-            }
+            if (debug) console.log({ point, depth, path, links: links.length });
 
-            // if fork in the road, follow all paths to their end
-            // and find the longest path
-            let root = !current, nc;
-            if (links.length > 1) {
-                // if (debug) console.log('fork!', {links: links.length, depth, root});
-                if (root) {
-                    current = [ path ];
-                    branches = [ ];
-                }
+            if (links.length === 0) {
+                // for dangling paths, terminate at any junction
+                if (debug) console.log('term at stub or no branch')
+                break;
+            } else if (links.length === 1) {
+                // one choice is easy, keep going
+                point = links[0];
+            } else if (links.length > 1) {
+                // if fork in the road, follow all paths to their end
+                // then find the path representing the shortest perimeter
+                if (debug) console.log('fork!', { base, links: links.length, depth });
                 if (branches.length < 500)
                 for (let p of links) {
-                    branches.push(nc = current.slice());
-                    let rpath = findNextPath(p, nc, branches, depth + 1);
-                    // allow point re-use in other path searches
-                    for (let p of rpath) p.del = false;
+                    findNextPath(p, {
+                        base,
+                        branches,
+                        depth: depth + 1,
+                        marked,
+                        path: path.slice()
+                    });
                 }
-                // flatten and sort in ascending perimeter
-                let flat = branches.map(b => b.flat()).sort((a,b) => {
-                    return perimeter(b) - perimeter(a);
-                });
-                let npath = flat[0];
-                if (debug) console.log({
-                    root,
-                    branches: branches.slice(),
-                    flat, path, npath
-                });
-                if (root) {
-                    for (let p of npath) p.del = true;
-                    return npath;
-                } else {
-                    return path;
-                }
-                // return root ? npath : path;
-            } else {
-                // choose next (unused) point
-                point = links[0];
-            }
-
-            // hit an open end or branch
-            if (!point || point.del) {
-                return path;
+                break;
             }
         }
 
-        throw "invalid state";
+        for (let point of marked) {
+            point.del = false;
+        }
+
+        // we only return data at the start of recursion
+        if (depth === 1) {
+            // flatten and sort branch paths in ascending perimeter
+            branches.sort((a,b) => {
+                return area(b) - area(a);
+            });
+            let npath = branches[0];
+            if (debug) console.log({
+                branches,
+                npath,
+                path,
+                base
+            });
+            for (let p of npath) {
+                p.del = true;
+            }
+            return npath;
+        } else {
+            if (debug) console.log('end branch', { depth });
+        }
     }
 
     // emit a polygon if it can be cleaned and still have 2 or more points
     function emit(poly) {
+        let gap = poly.first().distTo2D(poly.last());
+        if (poly.open && strict && gap > bridgeMax) {
+            if (debug) console.log('drop', gap, poly);
+            return;
+        }
         emitted += poly.length;
-        if (!opt.dirty) poly = poly.clean();
-        if (poly.length > 2 || true) output.push(poly);
-        if (debug) console.log('xray',poly);
+        if (!dirty) poly = poly.clean();
+        if (poly.length > 2) output.push(poly);
+        if (debug) console.log('xray', poly);
     }
 
     // given an array of paths, emit longest to shortest
     // eliminating points from the paths as they are emitted
     // shorter paths any point eliminated are eliminated as candidates.
     function emitPath(path) {
+        // test if last point is in the first point's connected list
         let closed = path[0].group.indexOf(path.peek()) >= 0;
         if (closed && path.length > 2) {
-            if (debug) console.log({ closed: path.length, path });
+            if (debug) console.log('emit', { closed: path.length, path });
             emit(newPolygon().addPoints(path));
-        } else if (path.length > 1) {
+        } else if (path.length > 2) {
             let gap = path[0].distTo2D(path.peek()).round(4);
-            if (debug) console.log({ open: path.length, gap, path });
-            connect.push(path);
+            if (gap < bridgeMax) {
+                connect.push(path);
+            }
+            if (debug) console.log('emit', { open: path.length, gap, path });
+        } else {
+            if (debug) console.log('emit', { drop: path });
         }
+        if (debug) debug_points();
     }
 
     // create point map, unique point list and point group arrays
-    input.forEach(function(line) {
+    for (let line of input) {
         p1 = cachedPoint(line.p1);
         p2 = cachedPoint(line.p2);
         addConnected(p1,p2);
         addConnected(p2,p1);
-    });
+    }
+
+    // exclude dangling points (from lines with the same endpoints)
+    points = points.filter(point => point.group);
 
     // console.log({points, forks: points.filter(p => p.group.length !== 2)});
     // for each unused point, find the longest non-intersecting path
 
     for (let point of points) {
         gl = point.group.length;
-        forks = forks || gl > 2;
-        frays = frays || gl < 2;
+        if (gl > 2) forks.push(point);
+        if (gl < 2) stubs.push(point);
     }
-    if (debug && (forks || frays)) console.log({forks, frays});
+
+    // show found forks and stubs in debug/xray mode
+    if (debug) {
+        console.log({ forks, stubs });
+        debug_points();
+    }
+
+    // for each dangling endpoint, try to find the closest dangling point
+    // in the soup which is less than the max bridging distance.
+    // if a candidate is found, synthesize a line between the endpoint
+    // and the candidate.
+    if (stubs.length) {
+        for (let i=0; i<stubs.length; i++) {
+            let min = { dist: Infinity };
+            let pi = stubs[i];
+            if (!pi) continue;
+            for (let j=1+i; j<stubs.length; j++) {
+                let pj = stubs[j];
+                if (!pj) continue;
+                let dist = pi.distTo2D(pj);
+                if (dist < min.dist) {
+                    min.dist = dist;
+                    min.p = pj;
+                    min.j = j;
+                }
+            }
+            if (min.p && min.dist < bridgeMax) {
+                let pj = min.p;
+                if (debug) console.log({ connect_stubs: [ pi, pj ]});
+                input.push({ p1: pi, p2: pj });
+                addConnected(pi, pj);
+                addConnected(pj, pi);
+                if (pi.group.length > 2) forks.push(pi);
+                if (pj.group.length > 2) forks.push(pj);
+                stubs[i] = undefined;
+                stubs[min.j] = undefined;
+            }
+        }
+        stubs = stubs.filter(p => p);
+        if (debug) console.log({ filter_stubs: stubs });
+    }
 
     // process paths starting with forks
-    if (forks) {
+    // find the path back to the starting point
+    // representing the greatest enclosed area
     if (debug) console.log('process forks');
-    for (let point of points) {
+    for (let point of forks) {
         // must not have been used and be a dangling end
         if (!point.del && point.group.length > 2) {
             let path = findNextPath(point);
             if (path) emitPath(path);
         }
-    } }
+    }
 
-    // process paths with dangling endpoints
-    if (frays) {
-    if (debug) console.log('process frays');
-    for (let point of points) {
-        // must not have been used and be a dangling end
-        if (!point.del && point.group.length === 1) {
-            let path = findNextPath(point);
-            if (path) emitPath(path);
-        }
-    } }
-
-    // process normal paths
-    if (debug) console.log('process mids');
+    // process remaining paths
+    // find the path back to the starting point
+    // representing the greatest enclosed area
+    if (debug) console.log('process norms');
     for (let point of points) {
         // must not have been used and be a dangling end
         if (!point.del) {
@@ -655,7 +743,7 @@ function sliceConnect(input, z, opt = {}) {
     // progressively connect open polygons within a bridge distance
     let iter = 1000;
     let mingap;
-    if (true) do {
+    if (false) do {
         mingap = Infinity;
 
         outer: for (let i=0; i<connect.length; i++) {
@@ -782,7 +870,7 @@ function sliceConnect(input, z, opt = {}) {
  * @param {Line[]} lines
  * @returns {Line[]}
  */
-function removeDuplicateLines(lines) {
+export function removeDuplicateLines(lines) {
     let output = [],
         tmplines = [],
         points = [],
@@ -873,12 +961,9 @@ function removeDuplicateLines(lines) {
     return output;
 }
 
-gapp.overlay(base, {
+export const slicer = {
     slice,
     sliceZ,
     slicePost: {},
-    sliceDedup: removeDuplicateLines,
     sliceConnect
-});
-
-});
+}

@@ -1,47 +1,44 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
-"use strict";
-
-// path & routing output utilities
-
-// dep: geo.base
-// dep: geo.point
-gapp.register("geo.paths", [], (root, exports) => {
-
-const { base } = root;
-const { util, config } = base;
-const { sqr, numOrDefault } = util;
-
-const DEG2RAD = Math.PI / 180;
+import { base } from './base.js';
+import { newPoint } from './point.js';
+import { newPolygon } from './polygon.js';
 
 /**
- * emit each element in an array based on
- * the next closest endpoint. arrays contain
- * elements with { first, last } points and
- * may be open polys, unlike poly2polyEmit
+ * Emit each element in array based on next closest endpoint
+ * Uses greedy nearest-neighbor algorithm to minimize travel distance
+ * Arrays contain elements with { first, last } points and may be open paths
+ * Elements are marked with delete flag to avoid reprocessing
+ * @param {Array} array - Array of elements with { first, last } Point properties
+ * @param {Point} startPoint - Starting point for path ordering
+ * @param {Function} emitter - Callback function(element, firstPoint, count)
+ * @returns {Point} Final endpoint after processing all elements
  */
-function tip2tipEmit(array, startPoint, emitter) {
+export function tip2tipEmit(array, startPoint, emitter) {
     let mindist, dist, found, count = 0;
     for (;;) {
         found = null;
         mindist = Infinity;
-        array.forEach(function(el) {
-            if (el.delete) return;
+        for (let el of array) {
+            if (el.delete) continue;
             dist = startPoint.distTo2D(el.first);
             if (dist < mindist) {
-                found = {el:el, first:el.first, last:el.last};
+                found = { el: el, first: el.first, last: el.last };
                 mindist = dist;
             }
+            // when heads is set, it's first to first
+            // not first/last to closest first/last
+            if (el.heads) continue;
             dist = startPoint.distTo2D(el.last);
             if (dist < mindist) {
-                found = {el:el, first:el.last, last:el.first};
+                found = { el: el, first: el.last, last: el.first };
                 mindist = dist;
             }
-        });
+        }
         if (found) {
             found.el.delete = true;
             startPoint = found.last;
-            emitter(found.el, found.first, ++count);
+            emitter(found.el, found.first, ++count, mindist);
         } else {
             break;
         }
@@ -50,12 +47,54 @@ function tip2tipEmit(array, startPoint, emitter) {
 }
 
 /**
- * like tip2tipEmit but accepts an array of polygons and the next closest
- * point can be anywhere in the adjacent polygon. should be re-written
- * to be more like outputOrderClosest() and have the option to account for
- * depth in determining distance
+ * Emit each element in array based on next closest endpoint
+ * Uses greedy nearest-neighbor algorithm to minimize travel distance
+ * When polygons are close, a new polygon is injected that joins them
+ * and the next polygon is reversed so that tips would merge on output
+ * @param {Array} paths - Array of elements with { first, last } Point properties
+ * @param {Point} startPoint - Starting point for path ordering
+ * @param {Number} mergeDist - threshold for merging Polygons
+ * @returns {Array} reduced merged Polygon array
  */
-function poly2polyEmit(array, startPoint, emitter, opt = {}) {
+export function tip2tipJoin(paths, startPoint, mergeDist) {
+    let newp = [];
+    tip2tipEmit(paths.map(path => ({
+        path,
+        last: path.last(),
+        first: path.first()
+    })), startPoint, (next, point, count, dist) => {
+        if (next.last === point) {
+            next.path.reverse();
+        }
+        if (newp.length && dist < mergeDist) {
+            let lastpath = newp.peek();
+            newp.push(newPolygon().addPoints([
+                lastpath.last(),
+                next.path.first()
+            ]));
+        }
+        newp.push(next.path);
+    });
+    return newp;
+}
+
+/**
+ * Emit polygons in optimal order based on nearest point
+ * Like tip2tipEmit but accepts polygons where next closest point can be anywhere
+ * Handles both open and closed polygons, can reverse open paths for optimal direction
+ * Optionally uses 3D distance weighted by polygon area for depth-aware ordering
+ * @param {Polygon[]} array - Array of polygons to process
+ * @param {Point} startPoint - Starting point for path ordering
+ * @param {Function} emitter - Callback function(polygon, startIndex, count, prevPoint) => Point
+ * @param {Object} [opt={}] - Options object
+ * @param {string} [opt.mark='delete'] - Property name to mark processed polygons
+ * @param {boolean} [opt.swapdir=true] - Allow reversing open paths for better direction
+ * @param {boolean} [opt.weight=false] - Use 3D distance weighted by area squared
+ * @param {boolean} [opt.term=false] - Terminate after finding first match
+ * @param {boolean} [opt.perm=false] - Keep markers permanent (don't undo)
+ * @returns {Point} Final endpoint after processing
+ */
+export function poly2polyEmit(array, startPoint, emitter, opt = {}) {
     let marker = opt.mark || 'delete';
     let mindist, dist, found, count = 0;
     for (;;) {
@@ -73,21 +112,21 @@ function poly2polyEmit(array, startPoint, emitter, opt = {}) {
                 }
                 if (d2l < mindist && d2l < d2f && opt.swapdir !== false) {
                     poly.reverse();
-                    found = {poly:poly, index:0, point:poly.first()};
+                    found = { poly: poly, index: 0, point: poly.first() };
                     mindist = d2l;
                 } else if (d2f < mindist) {
-                    found = {poly:poly, index:0, point:poly.first()};
+                    found = { poly: poly, index: 0, point: poly.first() };
                     mindist = d2f;
                 }
                 continue;
             }
             let area = poly.open ? 1 : poly.area();
-            poly.forEachPoint(function(point, index) {
+            poly.forEachPoint((point, index) => {
                 dist = opt.weight ?
                     startPoint.distTo3D(point) * area * area :
                     startPoint.distTo2D(point);
                 if (dist < mindist) {
-                    found = {poly:poly, index:index, point:point};
+                    found = { poly: poly, index: index, point: point };
                     mindist = dist;
                 }
             });
@@ -101,23 +140,39 @@ function poly2polyEmit(array, startPoint, emitter, opt = {}) {
 
     // undo delete marks
     if (opt.perm !== true) {
-        array.forEach(function(poly) { poly[marker] = false });
+        array.forEach(function (poly) { poly[marker] = false });
     }
 
     return startPoint;
 }
 
-function calc_normal(p1, p2) {
+/**
+ * Calculate normalized perpendicular (normal) vector for line segment
+ * Returns unit vector perpendicular to p1->p2 (rotated 90 degrees CCW)
+ * @param {Point} p1 - Segment start point
+ * @param {Point} p2 - Segment end point
+ * @returns {Object} Normal data: { dx, dy, p1, p2, len }
+ */
+export function calc_normal(p1, p2) {
     let dx = p2.x - p1.x;
     let dy = p2.y - p1.y;
     let len = Math.sqrt(dx * dx + dy * dy);
     let mn = (1 / len);
     dx *= mn;
     dy *= mn;
-    return({ dx: dy, dy: -dx, p1, p2, len });
+    return ({ dx: dy, dy: -dx, p1, p2, len });
 }
 
-function end_vertex(n1, n2, off, start) {
+/**
+ * Calculate vertex offset for path endpoints (start or end)
+ * Used for open paths where there's no adjacent segment on one side
+ * @param {Object} n1 - Previous segment normal
+ * @param {Object} n2 - Next segment normal
+ * @param {number} off - Offset distance
+ * @param {boolean} start - True if start vertex, false if end vertex
+ * @returns {Object} Vertex data: { dx, dy, vp }
+ */
+export function end_vertex(n1, n2, off, start) {
     let dx, dy;
     if (start) {
         dx = n2.dx * off;
@@ -129,7 +184,19 @@ function end_vertex(n1, n2, off, start) {
     return { dx, dy, vp: n1.p2 };
 }
 
-function calc_vertex(n1, n2, off, vp) {
+/**
+ * Calculate vertex offset at junction of two line segments
+ * Computes miter join offset based on angle between segments
+ * Returns offset direction, turn direction (io), and vertex length (vl)
+ * @param {Object} n1 - Previous segment normal with dx, dy
+ * @param {Object} n2 - Next segment normal with dx, dy
+ * @param {number} off - Offset distance
+ * @param {Point} [vp] - Vertex point (defaults to n1.p2)
+ * @returns {Object} Vertex data: { dx, dy, vp, io, vl }
+ *   - io: cross product (positive = right turn, negative = left turn)
+ *   - vl: vertex length for detecting acute angles
+ */
+export function calc_vertex(n1, n2, off, vp) {
     let dx, dy, io, vl, q, r;
     r = 1 + (n1.dx * n2.dx + n1.dy * n2.dy);
     q = off / r;
@@ -147,7 +214,13 @@ function calc_vertex(n1, n2, off, vp) {
     return { dx, dy, vp: vp || n1.p2, io, vl };
 }
 
-function v2pl(rec) {
+/**
+ * Convert vertex record to point on left side of path
+ * Adds offset to original vertex position
+ * @param {Object} rec - Vertex record with { dx, dy, vp }
+ * @returns {Point} Point offset to left
+ */
+export function v2pl(rec) {
     let p = rec.vp.clone();
     p.x += rec.dx;
     p.y += rec.dy;
@@ -155,7 +228,13 @@ function v2pl(rec) {
     return p;
 }
 
-function v2pr(rec) {
+/**
+ * Convert vertex record to point on right side of path
+ * Subtracts offset from original vertex position
+ * @param {Object} rec - Vertex record with { dx, dy, vp }
+ * @returns {Point} Point offset to right
+ */
+export function v2pr(rec) {
     let p = rec.vp.clone();
     p.x -= rec.dx;
     p.y -= rec.dy;
@@ -163,17 +242,33 @@ function v2pr(rec) {
     return p;
 }
 
-function pointsToPath(points, offset, open, miter = 1.5) {
+/**
+ * Convert point array to offset path with left/right sides and triangle faces
+ * Generates parallel paths offset from center line with proper miter joints
+ * Handles both open and closed paths, with acute angle splitting
+ * Used for extruding 2D paths into 3D geometry
+ * @param {Point[]} points - Array of points defining centerline path
+ * @param {number} offset - Offset distance (positive/negative for direction)
+ * @param {boolean} open - True for open path, false for closed loop
+ * @param {number} [miter=1.5] - Miter limit ratio for splitting acute angles
+ * @returns {Object} Path data: { left, right, faces, normals, open }
+ *   - left: Array of points on left side
+ *   - right: Array of points on right side
+ *   - faces: Array of points forming triangle mesh
+ *   - normals: Array of normal vectors for each face vertex
+ *   - open: Whether path is open or closed
+ */
+export function pointsToPath(points, offset, open, miter = 1.5) {
     const absoff = Math.abs(offset);
     // calculate segment normals which are used to calculate vertex normals
     // next segment info is associated with the current point
     const nupoints = [];
     const length = points.length;
     if (length === 2 && points[0].isEqual(points[1])) {
-        return { };
+        return {};
     }
     const dedup = (open && length > 2) || (!open && length > 3);
-    for (let i=0; i<length; i++) {
+    for (let i = 0; i < length; i++) {
         let p1 = points[i];
         let p2 = points[(i + 1) % length];
         p1.normal = calc_normal(p1, p2);
@@ -190,7 +285,7 @@ function pointsToPath(points, offset, open, miter = 1.5) {
         nupoints.push(p1);
     }
     if (nupoints.length === 1) {
-        console.log({points, nupoints});
+        console.log({ points, nupoints });
     }
     // when points are dropped, we need the new array
     points = nupoints;
@@ -203,10 +298,10 @@ function pointsToPath(points, offset, open, miter = 1.5) {
     // calculate vertex normals from segments normals
     // vertex info is associated with the origin point
     let fl, fr;
-    for (let i=0, l=points.length; i<l; i++) {
-        let n1 = points[(i+l-1)%l].normal;
-        let n2 = points[(i+l)%l].normal;
-        let vn = open && (i === 0 || i === l-1) ?
+    for (let i = 0, l = points.length; i < l; i++) {
+        let n1 = points[(i + l - 1) % l].normal;
+        let n2 = points[(i + l) % l].normal;
+        let vn = open && (i === 0 || i === l - 1) ?
             end_vertex(n1, n2, offset, i === 0) :
             calc_vertex(n1, n2, offset);
         let { p1, p2 } = n2;
@@ -228,7 +323,7 @@ function pointsToPath(points, offset, open, miter = 1.5) {
             // shorten each leg and insert new point
             let delta = 0.1;
             let np1 = p1.clone().move({ x: n1.dy * delta, y: -n1.dx * delta, z: 0 });
-            let np2 = p1.clone().move({ x:-n2.dy * delta, y:  n2.dx * delta, z: 0 });
+            let np2 = p1.clone().move({ x: -n2.dy * delta, y: n2.dx * delta, z: 0 });
             let sn1 = np1.normal = calc_normal(np1, np2);
             let sn2 = np2.normal = p1.normal;
             let nv1 = calc_vertex(n1.p1.normal, sn1, offset, np1);
@@ -335,7 +430,18 @@ function pointsToPath(points, offset, open, miter = 1.5) {
     return { left, right, faces, normals, open };
 }
 
-function pathTo3D(path, height, z) {
+/**
+ * Extrude 2D path to 3D geometry with specified height
+ * Generates vertex positions and normals for top, bottom, and side faces
+ * Used for creating 3D representations of 2D toolpaths
+ * @param {Object} path - Path object from pointsToPath with { faces, normals, left, right, open }
+ * @param {number} height - Half-height of extrusion (total height = 2 * height)
+ * @param {number} [z] - Optional Z coordinate for path (sets base Z level)
+ * @returns {Object} 3D geometry: { faces, normals }
+ *   - faces: Float32Array of vertex positions (x,y,z triplets)
+ *   - normals: Float32Array of normal vectors (x,y,z triplets)
+ */
+export function pathTo3D(path, height, z) {
     const { faces, normals, left, right, open } = path;
     const out = [];
     const nrm = [];
@@ -355,14 +461,14 @@ function pathTo3D(path, height, z) {
     }
     nrm.appendAll(normals);
     // reverse normals to match faces, but underside so reverse Z as well
-    for (let i=normals.length-1; i>0; i-=3) {
-        nrm.push(normals[i-2]);
-        nrm.push(normals[i-1]);
-        nrm.push(-normals[i-0]);
+    for (let i = normals.length - 1; i > 0; i -= 3) {
+        nrm.push(normals[i - 2]);
+        nrm.push(normals[i - 1]);
+        nrm.push(-normals[i - 0]);
     }
-    for (let i=0, l=left.length, tl = open ? l-1 : l; i<tl; i++) {
+    for (let i = 0, l = left.length, tl = open ? l - 1 : l; i < tl; i++) {
         let p0 = left[i];
-        let p1 = left[(i+1)%l];
+        let p1 = left[(i + 1) % l];
         out.push(p0.x, p0.y, p0.z + height);
         out.push(p0.x, p0.y, p0.z - height);
         out.push(p1.x, p1.y, p1.z - height);
@@ -371,15 +477,15 @@ function pathTo3D(path, height, z) {
         out.push(p0.x, p0.y, p0.z + height);
         let ln = p0.vp.normal;
         nrm.push(ln.dx, ln.dy, -1);
-        nrm.push(ln.dx, ln.dy,  1);
-        nrm.push(ln.dx, ln.dy,  1);
-        nrm.push(ln.dx, ln.dy,  1);
+        nrm.push(ln.dx, ln.dy, 1);
+        nrm.push(ln.dx, ln.dy, 1);
+        nrm.push(ln.dx, ln.dy, 1);
         nrm.push(ln.dx, ln.dy, -1);
         nrm.push(ln.dx, ln.dy, -1);
     }
-    for (let i=0, l=right.length, tl = open ? l-1 : l; i<tl; i++) {
+    for (let i = 0, l = right.length, tl = open ? l - 1 : l; i < tl; i++) {
         let p0 = right[i];
-        let p1 = right[(i+1)%l];
+        let p1 = right[(i + 1) % l];
         out.push(p0.x, p0.y, p0.z + height);
         out.push(p1.x, p1.y, p1.z - height);
         out.push(p0.x, p0.y, p0.z - height);
@@ -387,12 +493,12 @@ function pathTo3D(path, height, z) {
         out.push(p0.x, p0.y, p0.z + height);
         out.push(p1.x, p1.y, p1.z + height);
         let rn = p0.vp.normal;
-        nrm.push(-rn.dy, rn.dx,  1);
+        nrm.push(-rn.dy, rn.dx, 1);
         nrm.push(-rn.dy, rn.dx, -1);
         nrm.push(-rn.dy, rn.dx, -1);
         nrm.push(-rn.dy, rn.dx, -1);
-        nrm.push(-rn.dy, rn.dx,  1);
-        nrm.push(-rn.dy, rn.dx,  1);
+        nrm.push(-rn.dy, rn.dx, 1);
+        nrm.push(-rn.dy, rn.dx, 1);
     }
     if (open) {
         // begin cap
@@ -405,12 +511,12 @@ function pathTo3D(path, height, z) {
         out.push(r0.x, r0.y, r0.z - height);
         out.push(l0.x, l0.y, l0.z + height);
         let ln = l0.vp.normal;
-        nrm.push(-ln.dy, ln.dx,  1);
+        nrm.push(-ln.dy, ln.dx, 1);
         nrm.push(-ln.dy, ln.dx, -1);
         nrm.push(-ln.dy, ln.dx, -1);
-        nrm.push(-ln.dy, ln.dx,  1);
+        nrm.push(-ln.dy, ln.dx, 1);
         nrm.push(-ln.dy, ln.dx, -1);
-        nrm.push(-ln.dy, ln.dx,  1);
+        nrm.push(-ln.dy, ln.dx, 1);
         // end cap
         let le = left.peek();
         let re = right.peek();
@@ -421,19 +527,28 @@ function pathTo3D(path, height, z) {
         out.push(le.x, le.y, le.z + height);
         out.push(re.x, re.y, re.z - height);
         ln = re.vp.normal;
-        nrm.push(-ln.dy, ln.dx,  1);
+        nrm.push(-ln.dy, ln.dx, 1);
         nrm.push(-ln.dy, ln.dx, -1);
         nrm.push(-ln.dy, ln.dx, -1);
-        nrm.push(-ln.dy, ln.dx,  1);
-        nrm.push(-ln.dy, ln.dx,  1);
+        nrm.push(-ln.dy, ln.dx, 1);
+        nrm.push(-ln.dy, ln.dx, 1);
         nrm.push(-ln.dy, ln.dx, -1);
     }
     return { faces: out, normals: nrm };
 }
 
-// produces indexed geometry which isn't ideal for rendering because
-// the default threejs generated vertex normals aren't accurate
-function shapeToPath(shape, points, closed) {
+/**
+ * Extrude Three.js shape along point path to create tube geometry
+ * Produces indexed geometry (not ideal for rendering - default vertex normals aren't accurate)
+ * Shape profile is swept along path with rotation/translation at each point
+ * @param {THREE.Shape} shape - Three.js shape to extrude (profile cross-section)
+ * @param {Point[]} points - Array of points defining path centerline
+ * @param {boolean} [closed=true] - Whether path is closed loop
+ * @returns {Object} Indexed geometry: { index, faces }
+ *   - index: Array of triangle indices
+ *   - faces: Float32Array of vertex positions
+ */
+export function shapeToPath(shape, points, closed) {
     closed = closed !== undefined ? closed : true;
 
     const profileGeometry = new THREE.ShapeGeometry(shape);
@@ -450,9 +565,9 @@ function shapeToPath(shape, points, closed) {
         let hA = halfAngle;
         let tA = v2.angle() + Math.PI * .5;
 
-        if (!closed){
-            if (i == 0 || i == points.length - 1) {hA = Math.PI * .5;}
-            if (i == points.length - 1) {tA = v1.angle() - Math.PI * .5;}
+        if (!closed) {
+            if (i == 0 || i == points.length - 1) { hA = Math.PI * .5; }
+            if (i == points.length - 1) { tA = v1.angle() - Math.PI * .5; }
         }
 
         const shift = Math.tan(hA - Math.PI * .5);
@@ -487,7 +602,7 @@ function shapeToPath(shape, points, closed) {
     }
 
     const index = [];
-    const lastCorner = closed == false ? points.length - 1: points.length;
+    const lastCorner = closed == false ? points.length - 1 : points.length;
 
     for (let i = 0; i < lastCorner; i++) {
         for (let j = 0; j < profile.count; j++) {
@@ -523,50 +638,99 @@ function shapeToPath(shape, points, closed) {
         index.push(p8, p7, p5);
     }
 
-    return {index, faces};
+    return { index, faces };
 }
 
-class FloatPacker {
-    constructor(size, factor) {
-        this.size = size;
-        this.factor = Math.min(factor || 1.2, 1.1);
-        this.array = new Float32Array(size);
-        this.pos = 0;
+/**
+ * Generate array of points approximating circular arc from G-code arc commands
+ * Interpolates arc into line segments for rendering and toolpath generation
+ * Handles full circles (when start equals end) and Z-axis interpolation
+ * @param {Point} start - Arc starting point
+ * @param {Point} end - Arc ending point (not included in output)
+ * @param {number} [arcdivs=24] - Number of line segments per PI radians
+ * @param {Object} opts - Arc parameters
+ * @param {Point} opts.center - Arc center point with .r radius property
+ * @param {number} opts.radius - Arc radius (alternative to center)
+ * @param {boolean} opts.clockwise - True for clockwise (CW/G2), false for CCW (G3)
+ * @returns {Point[]} Array of interpolated points along arc (excluding end point)
+ */
+export function arcToPath(start, end, arcdivs = 24, opts) {
+    let { clockwise, center, radius } = opts;
+
+    if (end.x === undefined && end.x === undefined && center === undefined) {
+        // bambu generates loop z or wipe loop arcs in place
+        // console.log({ skip_empty_arc: rec });
+        return;
     }
 
-    push() {
-        const array = this.array;
-        const size = this.size;
-        const args = arguments.length;
-        if (this.pos + args >= size) {
-            let nusize = ((size * this.factor) | 0) + args;
-            let nuarray = new Float32Array(nusize);
-            nuarray.set(array);
-            this.array = nuarray;
-            this.size = nusize;
-        }
-        for (let i=0; i<args; i++) {
-            array[this.pos++] = arguments[i];
-        }
+    if (arcdivs <= 2) {
+        return [start.clone(), end.clone()];
     }
 
-    finalize() {
-        if (this.pos / this.size >= 0.9) {
-            return this.array.subarray(0, this.pos);
+    if (center) {
+        // center = center.add(start);
+        center.r = center.distTo2D(start);
+    } else if (radius !== undefined) {
+        let pd = { x: end.x - start.x, y: end.y - start.y }; //position delta
+        let dst = Math.sqrt(pd.x * pd.x + pd.y * pd.y) / 2; // distance
+        let pr2;
+        if (Math.abs(dst - radius) < 0.001) {
+            // center point radius
+            pr2 = { x: (end.x + start.x) / 2, y: (end.y + start.y) / 2 };
         } else {
-            return this.array.slice(0, this.pos);
+            // triangulate
+            pr2 = base.util.center2pr(start, end, radius, clockwise);
         }
+        center.x = pr2.x;
+        center.y = pr2.y;
+        center.r = radius;
+    } else {
+        console.log({ malfomed_arc: { radius, center, clockwise, start, end } });
     }
+
+    //deltas
+    let dx = start.x - end.x;
+    let dy = start.y - end.y;
+    let dz = start.z - end.z;
+
+    // line angles
+    let a1 = Math.atan2(center.y - start.y, center.x - start.x) + Math.PI;
+    let a2 = Math.atan2(center.y - end.y, center.x - end.x) + Math.PI;
+    let ad = base.util.thetaDiff(a1, a2, clockwise); // angle difference in radians
+    let samePoint = Math.abs(ad) < 0.001
+    let ofFull = Math.abs(ad) / (2 * Math.PI);
+    let steps = samePoint ? arcdivs : Math.max(Math.floor(arcdivs * ofFull), 4);
+    let step = (samePoint ? (Math.PI * 2) * (clockwise ? -1 : 1) : ad) / steps;
+    let zStart = start.z;
+    let zStep = -dz / steps;
+    let rot = a1;
+
+    //unused deltas
+    let da = Math.abs(a1 - a2);
+    let dd = Math.sqrt(dx * dx + dy * dy);
+
+    let arr = [] // point accumulator
+    for (let i = 0; i <= steps - 2; i++) {
+        if (isNaN(center.r) || isNaN(center.x) || isNaN(center.y)) {
+            console.log({ malfomed_arc: { radius, clockwise, start, end } });
+        }
+        arr.push(newPoint(
+            center.x + Math.cos(rot) * center.r,
+            center.y + Math.sin(rot) * center.r,
+            zStart,
+        ));
+        zStart += zStep;
+        rot += step;
+    }
+
+    // console.log(arr,start,end);
+    return arr
 }
 
-base.paths = {
-    poly2polyEmit,
+export const paths = {
     tip2tipEmit,
+    poly2polyEmit,
     shapeToPath,
     pointsToPath,
-    pathTo3D,
-    vertexNormal: calc_vertex,
-    segmentNormal: calc_normal
-};
-
-});
+    pathTo3D
+}

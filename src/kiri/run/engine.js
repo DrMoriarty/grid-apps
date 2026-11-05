@@ -1,0 +1,229 @@
+/** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
+
+import '../../add/array.js';
+import '../../add/class.js';
+import '../../add/three.js';
+import { api } from '../app/api.js';
+import { conf } from '../app/conf/defaults.js';
+import { client } from '../app/workers.js';
+import { load } from '../../load/file.js';
+import { newWidget } from '../app/widget.js';
+
+class Engine {
+    constructor({ workURL, poolURL } = {}) {
+        this.widget = newWidget();
+        this.settings = {
+            mode: "FDM",
+            controller: {},
+            render: false,
+            filter: { FDM: "internal" },
+            device: conf.defaults.fdm.d, // device profile
+            process: conf.defaults.fdm.p, // slicing settings
+            widget: { [this.widget.id]: {} },
+            time: Date.now()
+        };
+        this.listener = () => { };
+        try {
+            client.setWorkPath(workURL);
+            client.setPoolPath(poolURL);
+            client.restart();
+            client.pool.start();
+        } catch (error) {
+            console.log({ error });
+        }
+    }
+
+    load(url) {
+        return new Promise((accept, reject) => {
+            try {
+                new load.STL().load(url, vertices => {
+                    this.listener({ loaded: url, vertices });
+                    this.widget.loadVertices(vertices).center();
+                    this.setTopOffset(0);
+                    accept(this);
+                });
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    clear() {
+        api.platform.clear();
+    }
+
+    workspace() {
+        return api.settings.export({ engine: this.settings });
+    }
+
+    parse(data) {
+        return new Promise((accept, reject) => {
+            try {
+                let vertices = new load.STL().parse(data);
+                this.listener({ parsed: data, vertices });
+                this.widget.loadVertices(vertices).center();
+                accept(this);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    setThreading(bool) {
+        console.log('setThreading() deprecated');
+        return this;
+    }
+
+    setListener(listener) {
+        this.listener = listener;
+        return this;
+    }
+
+    setRender(bool) {
+        this.settings.render = bool;
+        return this;
+    }
+
+    /**
+     * Sets the mode of the engine. Valid modes are:
+     * @param {"FDM"|"CAM"|"LASER"|"SLA"} mode - the mode to set
+     * @returns {Engine} this
+     */
+    setMode(mode) {
+        let lmode = mode.toLowerCase();
+        Object.assign(this.settings, {
+            mode: mode,
+            controller: {},
+            render: false,
+            filter: { [mode]: "internal" },
+            device: conf.defaults[lmode].d,
+            process: conf.defaults[lmode].p,
+        });
+        return this;
+    }
+
+    setDevice(device) {
+        Object.assign(this.settings.device, device);
+        return this;
+    }
+
+    setProcess(process) {
+        Object.assign(this.settings.process, process);
+        return this;
+    }
+
+    setController(controller) {
+        let ctrl = this.settings.controller;
+        Object.assign(ctrl, controller);
+        if (ctrl.threaded) {
+            client.pool.start();
+        } else {
+            client.pool.stop();
+        }
+        return this;
+    }
+
+    setTools(tools) {
+        this.settings.tools = tools;
+        return this;
+    }
+
+    setStock(stock) {
+        let { settings } = this;
+        let { process } = settings;
+        settings.stock = stock;
+        process.camStockX = stock.x;
+        process.camStockY = stock.y;
+        process.camStockZ = stock.z;
+        settings.stock.center = {
+            x: stock.x / 2,
+            y: stock.y / 2,
+            z: stock.z / 2
+        };
+        return this;
+    }
+
+    setTopOffset(offset = 0) {
+        this.topOffset = offset;
+        let wbb = this.widget.getBoundingBox();
+        this.widget.setTopZ(wbb.max.z - offset);
+        return this;
+    }
+
+    setOrigin(x, y, z) {
+        this.origin = { x, y, z };
+        this.settings.origin = this.origin;
+        return this;
+    }
+
+    moveTo(x, y, z) {
+        this.widget.move(x, y, z, true);
+        return this;
+    }
+
+    move(x, y, z) {
+        this.widget.move(x, y, z);
+        return this;
+    }
+
+    scale(x, y, z) {
+        this.widget.scale(x, y, z);
+        return this;
+    }
+
+    rotate(x, y, z) {
+        this.widget.rotate(x, y, z);
+        return this;
+    }
+
+    slice() {
+        return new Promise((accept, reject) => {
+            client.clear();
+            client.sync([this.widget]);
+            client.rotate(this.settings);
+            client.slicePre(this.settings, () => {});
+            client.slice(this.settings, this.widget, msg => {
+                this.listener({ slice: msg });
+                if (msg.error) {
+                    reject(msg.error);
+                }
+                if (msg.done) {
+                    accept(this);
+                    client.slicePost(this.settings, () => {});
+                }
+            });
+        });
+    }
+
+    prepare() {
+        return new Promise((accept, reject) => {
+            client.prepare(this.settings, update => {
+                this.listener({ prepare: { update } });
+            }, done => {
+                this.listener({ prepare: { done: true } });
+                accept(this);
+            });
+        });
+    }
+
+    export() {
+        return new Promise((accept, reject) => {
+            let output = [];
+            client.export(this.settings, segment => {
+                if (typeof segment === 'string') {
+                    this.listener({ export: { segment } });
+                    output.push(segment);
+                }
+            }, done => {
+                this.listener({ export: { done } });
+                accept(output.join('\r\n'));
+            });
+        });
+    }
+}
+
+export function newEngine() {
+    return new Engine(...arguments);
+}
+
+export { Engine };

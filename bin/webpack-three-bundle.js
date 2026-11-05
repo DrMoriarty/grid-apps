@@ -7,10 +7,19 @@ import { LineMaterial } from '../node_modules/three/examples/jsm/lines/LineMater
 import { LineGeometry } from '../node_modules/three/examples/jsm/lines/LineGeometry.js';
 import { LineSegments2 } from '../node_modules/three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from '../node_modules/three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { TrackballControls } from '../node_modules/three/examples/jsm/controls/TrackballControls.js';
+
+import * as MeshBVHLib from '../node_modules/three-mesh-bvh/build/index.module.js';
 
 export {
-    THREE, SVGLoader, BufferGeometryUtils,
+    THREE,
+    SVGLoader,
+    BufferGeometryUtils,
     LineMaterial,
-    Line2, LineGeometry,
-    LineSegments2, LineSegmentsGeometry
+    Line2,
+    LineGeometry,
+    LineSegments2,
+    LineSegmentsGeometry,
+    TrackballControls,
+    MeshBVHLib
 };
