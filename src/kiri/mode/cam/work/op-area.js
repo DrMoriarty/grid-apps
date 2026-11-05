@@ -171,6 +171,17 @@ class OpArea extends CamOp {
                 let zroc = 0;
                 let zinc = 1 / zs.length;
                 let lzo;
+                // anchor for the next spiral's start: the end of the most
+                // recently stitched spiral (previous depth, or previous
+                // region within the same depth). the tool enters the next
+                // spiral from that point, so starting the spiral there —
+                // instead of at a fixed point on the outermost ring —
+                // eliminates the cross-pocket traversal between depths
+                // (resampleRing aligns the outermost ring's start to it,
+                // and the emitter's greedy ordering then picks the spiral
+                // first). unknown for the first spiral, which falls back
+                // to the ring's own first point
+                let spiralRef;
 
                 if (!zs.length) break;
 
@@ -251,18 +262,23 @@ class OpArea extends CamOp {
                             call: (polys, count, depth) => { rings[depth] = polys; }
                         });
                         // on success the spiral (and optional finish ring)
-                        // are appended to `outs`; on failure the discrete
-                        // rings are emitted as-is, matching legacy output
-                        if (!stitchSpiral(rings, {
+                        // are appended to `outs` and its end point becomes
+                        // the start anchor for the next depth's spiral;
+                        // on failure the discrete rings are emitted as-is,
+                        // matching legacy output
+                        let stitched = stitchSpiral(rings, {
                             outs,
                             finish: op.spiral_finish,
-                            spacing: toolOver / 2
-                        })) {
+                            spacing: toolOver / 2,
+                            start: spiralRef
+                        });
+                        if (!stitched) {
                             for (let level of rings) {
                                 if (level) outs.push(...level);
                             }
                         } else {
                             didSpiral = true;
+                            spiralRef = stitched.end;
                         }
                     } else {
                         //actually offset the walls inwards
@@ -760,7 +776,15 @@ function resampleRing(poly, n, start) {
  *   morph ring 0 -> ring 1; 1 spans the entire revolution so the
  *   outermost ring is cut exactly once before spiraling inward
  *   (default 1)
- * @returns {boolean} true when a spiral was generated
+ * @param {Point} [opts.start] anchor point the (first region's) spiral
+ *   should begin near — typically the end point of the previously
+ *   stitched spiral, so consecutive spirals start where the tool
+ *   already is instead of at a fixed point on the outermost ring.
+ *   each subsequent region's spiral is anchored to the previous
+ *   region's end point (default: outermost ring's first point)
+ * @returns {{ end: Point } | false} the end point of the last stitched
+ *   spiral (next anchor) when a spiral was generated, false otherwise
+ *   (`outs` untouched in that case)
  */
 function stitchSpiral(rings, opts) {
     const outs = opts.outs;
@@ -822,11 +846,15 @@ function stitchSpiral(rings, opts) {
 
     // stitch each region's progression; regions that cannot produce a
     // spiral (too few loops, degenerate geometry) emit their rings
-    // discretely
+    // discretely. regions are stitched in seed (slice) order and each
+    // region's spiral start is anchored to the previous region's end
+    // point, so consecutive spirals (within a level and across depths)
+    // begin near where the tool already is
     let result = [];
     let spiraled = false;
+    let ref = opts.start;
     for (let region of regions) {
-        let stitched = stitchRegion(region, { spacing, blend, first_blend });
+        let stitched = stitchRegion(region, { spacing, blend, first_blend, start: ref });
         if (stitched) {
             spiraled = true;
             result.push(stitched.spiral);
@@ -844,6 +872,11 @@ function stitchSpiral(rings, opts) {
             if (stitched.remainder.length) {
                 result.push(...stitched.remainder);
             }
+            // the spiral ends on the innermost ring; any appended finish
+            // ring starts (at output time) at the wall point nearest this
+            // end, so the spiral end remains the best available anchor
+            // for the next spiral
+            ref = stitched.end;
         } else {
             for (let level of region) {
                 if (level && level.length) {
@@ -856,7 +889,7 @@ function stitchSpiral(rings, opts) {
         return false;
     }
     outs.push(...result);
-    return true;
+    return { end: ref };
 }
 
 /**
@@ -872,8 +905,11 @@ function stitchSpiral(rings, opts) {
  * @param {number} opts.blend fraction of a revolution used to morph
  * @param {number} [opts.first_blend] fraction of revolution 1 used to
  *   morph ring 0 -> ring 1 (default 1 = whole revolution)
+ * @param {Point} [opts.start] anchor point the spiral should begin near
+ *   (see stitchSpiral()); defaults to the outermost ring's first point
  * @returns {{ spiral: Polygon, wall: Polygon, loop: Polygon,
- *            remainder: Polygon[], finish_dup: boolean } | null}
+ *            remainder: Polygon[], finish_dup: boolean, end: Point } | null}
+ *   `end` is the spiral's last point (the next spiral's start anchor);
  *   `finish_dup` is true when the caller's finish ring candidate
  *   (`wall`, or `loop` for pocket-style regions) coincides with a full
  *   revolution the spiral already cuts exactly: revolution 0 for
@@ -963,14 +999,17 @@ function stitchRegion(levels, opts) {
 
     // resample every ring to a common point count, each starting at the
     // point closest to the previous ring's start so index i tracks the
-    // same angular position on every ring
+    // same angular position on every ring. the initial reference comes
+    // from opts.start (the anchor point the spiral should begin near,
+    // e.g. where the tool ended the previous depth) and falls back to
+    // the first point of the outermost ring
     let n = 16;
     for (let loop of loops) {
         n = Math.max(n, Math.ceil(loop.perimeter() / spacing));
     }
     n = Math.min(n, 4096);
     let res = [];
-    let start = loops[0].first();
+    let start = opts.start ?? loops[0].first();
     for (let loop of loops) {
         let r = resampleRing(loop, n, start);
         res.push(r);
@@ -1022,7 +1061,16 @@ function stitchRegion(levels, opts) {
         return null;
     }
 
-    return { spiral, wall, loop: loops[0], remainder, finish_dup: wall ? wallIsLast : true };
+    return {
+        spiral,
+        wall,
+        loop: loops[0],
+        remainder,
+        finish_dup: wall ? wallIsLast : true,
+        // the spiral's last point: the caller chains it as the start
+        // anchor for the next depth's / region's spiral
+        end: spiral.last()
+    };
 }
 
 function omitOuter(polys) {
