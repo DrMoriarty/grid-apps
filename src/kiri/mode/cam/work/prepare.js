@@ -805,6 +805,9 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
     function polyEmit(poly, index, engage = false) {
         let arcing = camArcEnabled && !contouring;
         let points = poly.points;
+        // spiral marker must be captured before arc detection below,
+        // which rebuilds the polygon and would drop custom properties
+        let spiraling = poly.spiral === true;
 
         if (poly.isClosed()) {
             // only look for the cloests starting point for closed loops
@@ -833,8 +836,11 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
 
         setNextIsMove();
 
-        // we skip ease-down logic in contouring mode or for open polys (traces .. maybe later)
-        if (!contouring && camEaseDown && poly.isClosed()) {
+        // we skip ease-down logic in contouring mode. closed polys ease down
+        // along their own perimeter; open spirals (see stitchRegion) ease
+        // down along their leading revolution, turning revolution 0 into a
+        // helical ramp to pass depth
+        if (!contouring && camEaseDown && (poly.isClosed() || spiraling)) {
             let point0 = points[0];
 
             // perform "up and over" and get a new printPoint without "emit"
@@ -853,28 +859,61 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
                 let zat = startPoint.z;
                 let len = points.length;
                 let lp, lz = Infinity;
-                // hard cap on number of repeats to catch bad geometry
-                for (let i=0; i<len*50 ; i++) {
-                    let ii = i % len;
-                    let pt = points[ii];
-                    if (zat <= pt.z) {
-                        // rotate points to start at end of ease
-                        points = [...points.slice(ii), ...points.slice(0,ii)];
-                        break;
-                    }
-                    if (i > 0) {
-                        let dd = lp.distTo2D(pt);
-                        zat = Math.max(pt.z, zat - (dd * easeDzPerMm));
-                        if (zat > lz) {
+                if (poly.isClosed()) {
+                    // hard cap on number of repeats to catch bad geometry
+                    for (let i=0; i<len*50 ; i++) {
+                        let ii = i % len;
+                        let pt = points[ii];
+                        if (zat <= pt.z) {
                             // rotate points to start at end of ease
-                            // also should never get here unless bad geometry
                             points = [...points.slice(ii), ...points.slice(0,ii)];
                             break;
                         }
-                        lz = zat;
+                        if (i > 0) {
+                            let dd = lp.distTo2D(pt);
+                            zat = Math.max(pt.z, zat - (dd * easeDzPerMm));
+                            if (zat > lz) {
+                                // rotate points to start at end of ease
+                                // also should never get here unless bad geometry
+                                points = [...points.slice(ii), ...points.slice(0,ii)];
+                                break;
+                            }
+                            lz = zat;
+                        }
+                        lp = pt.clone().setZ(Math.max(pt.z, zat));
+                        camOut(lp, 1, { feed: easeFeed });
                     }
-                    lp = pt.clone().setZ(Math.max(pt.z, zat));
-                    camOut(lp, 1, { feed: easeFeed });
+                } else {
+                    // helical ease-down for open spiral paths: descend at
+                    // the ease angle along the path (revolution 0 first)
+                    // until reaching pass depth, then hand the remainder to
+                    // the normal emit pass below. no rotation: the spiral is
+                    // a monotone open path, so the eased prefix is simply
+                    // dropped from normal emission
+                    let ii = len;
+                    for (let i=0; i<len ; i++) {
+                        let pt = points[i];
+                        if (zat <= pt.z) {
+                            ii = i;
+                            break;
+                        }
+                        if (i > 0) {
+                            let dd = lp.distTo2D(pt);
+                            zat = Math.max(pt.z, zat - (dd * easeDzPerMm));
+                            if (zat > lz) {
+                                // should never get here unless bad geometry
+                                ii = i;
+                                break;
+                            }
+                            lz = zat;
+                        }
+                        lp = pt.clone().setZ(Math.max(pt.z, zat));
+                        camOut(lp, 1, { feed: easeFeed });
+                    }
+                    // drop the eased prefix from normal emission. when the
+                    // ease outruns the path (deep pass, short spiral), clamp
+                    // the remaining drop onto the final point
+                    points = points.slice(Math.min(ii, len - 1));
                 }
             }
 

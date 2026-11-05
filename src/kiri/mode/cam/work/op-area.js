@@ -236,6 +236,11 @@ class OpArea extends CamOp {
                     // falls back to the discrete rings below when the
                     // geometry does not support a spiral for this area
                     let doSpiral = op.spiral && !op.walls && !op.omitouter;
+                    // true when this depth produced at least one stitched
+                    // spiral: its open fragments get flagged below so the
+                    // emitter can apply a helical ease-down along the
+                    // spiral's leading revolution
+                    let didSpiral = false;
                     if (doSpiral) {
                         // collect rings per offset depth via the collector.
                         // the offset accumulator is a throwaway: rings must
@@ -256,6 +261,8 @@ class OpArea extends CamOp {
                             for (let level of rings) {
                                 if (level) outs.push(...level);
                             }
+                        } else {
+                            didSpiral = true;
                         }
                     } else {
                         //actually offset the walls inwards
@@ -291,6 +298,17 @@ class OpArea extends CamOp {
                     }
                     // cut tabs when present
                     if (tabs.length) outs = cutTabs(tabs, outs);
+                    // flag open spiral fragments for the emitter's helical
+                    // ease-down (revolution 0 doubles as the ramp to depth).
+                    // done after cutTabs because it rebuilds polylines and
+                    // would drop a marker set at stitch time; discrete rings,
+                    // finish rings and remainder loops are all closed and
+                    // thus never flagged
+                    if (didSpiral) {
+                        for (let out of outs) {
+                            if (out.open) out.spiral = true;
+                        }
+                    }
                     // for roughing backward compatability
                     if (op.leave_z) {
                         for (let out of outs)
@@ -613,7 +631,6 @@ class OpArea extends CamOp {
                 pocket({
                     cutdir: op.ov_conv,
                     depthFirst: process.camDepthFirst,
-                    easeDown: op.down && process.easeDown ? op.down : 0,
                     outline: op.drape || op.mode === 'trace',
                     progress: (n,m) => progress(n/m, "area"),
                     slices: min.area.filter(slice => slice.camLines)
