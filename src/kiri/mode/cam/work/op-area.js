@@ -690,10 +690,15 @@ function resampleRing(poly, n, start) {
  * softened by the morph but not eliminated — an accepted trade-off of
  * this strategy.
  *
- * The stitch is skipped (returns false, `outs` untouched) when the ring
- * set is not a simple progression of loops: multiple disjoint regions at
- * any offset depth, more than one hole in any ring, open or degenerate
- * rings, or fewer than two rings. The caller then falls back to the
+ * A level that fragments into multiple disjoint polygons (or grows a
+ * second hole) ends the monotone progression rather than failing the
+ * stitch: the "good" prefix of levels is spiraled and the polygons of
+ * the fragmented level (and all deeper levels) are appended after the
+ * spiral as discrete cutting loops. This is the common roughing case
+ * where stock corners outlive a receding annulus. The stitch is skipped
+ * entirely (returns false, `outs` untouched) only for structurally
+ * degenerate ring sets: open or degenerate rings anywhere, or fewer
+ * than two loops in the good prefix. The caller then falls back to the
  * discrete ring output.
  *
  * Rings may carry a single hole (`.inner`), which is how offset levels
@@ -731,25 +736,55 @@ function stitchSpiral(rings, opts) {
     // collect the cutting loops of every offset depth: a level without
     // holes contributes its single outer loop (pocket style); a level
     // with exactly one hole contributes that hole's contour as well
-    // (annulus / roughing style)
+    // (annulus / roughing style). a fragmented level (multiple polygons,
+    // e.g. stock corners outliving a receding annulus) or a level with
+    // more than one hole ends the monotone progression: the loops
+    // collected so far are spiraled and the fragmented level plus all
+    // deeper levels are appended discretely after the spiral
     let loops = [];
     let wall = null;
+    let remainder = [];
+    let split = false;
     for (let level of rings) {
-        if (!level || level.length !== 1) {
-            return false;
+        if (!level || !level.length) {
+            // no geometry at this depth: the progression (if any) ends
+            // here; deeper levels, if any, clear discretely
+            split = true;
+            continue;
+        }
+        // open or degenerate loops anywhere are a structural failure:
+        // fall back to the legacy discrete emission for the whole set
+        for (let poly of level) {
+            if (poly.open || poly.length < 4) {
+                return false;
+            }
+            if (poly.inner) {
+                for (let inner of poly.inner) {
+                    if (inner.open || inner.length < 4 || inner.inner) {
+                        return false;
+                    }
+                }
+            }
+        }
+        if (split) {
+            remainder.push(...level);
+            continue;
+        }
+        if (level.length !== 1) {
+            split = true;
+            remainder.push(...level);
+            continue;
         }
         let poly = level[0];
-        if (poly.open || poly.length < 4) {
-            return false;
+        if (poly.inner && poly.inner.length !== 1) {
+            // multiple islands pinched off inside the contour: treat
+            // like a fragmented level
+            split = true;
+            remainder.push(...level);
+            continue;
         }
         if (poly.inner) {
-            if (poly.inner.length !== 1) {
-                return false;
-            }
             let inner = poly.inner[0];
-            if (inner.open || inner.length < 4 || inner.inner) {
-                return false;
-            }
             // the first (shallowest) level's hole hugs the part wall
             if (!wall) {
                 wall = inner;
@@ -758,6 +793,10 @@ function stitchSpiral(rings, opts) {
         } else {
             loops.push(poly);
         }
+    }
+    // a single loop gains nothing from stitching
+    if (loops.length < 2) {
+        return false;
     }
     if (wall) {
         // annulus levels interleave receding outer and growing inner
@@ -836,6 +875,12 @@ function stitchSpiral(rings, opts) {
     outs.push(spiral);
     if (finish) {
         outs.push((wall ?? loops[0]).clone(true).setClosed());
+    }
+    // polygons of fragmented levels (and everything deeper) trail the
+    // spiral as discrete cutting loops — small leftover regions (stock
+    // corners) for which discrete clearing is correct
+    if (remainder.length) {
+        outs.push(...remainder);
     }
     return true;
 }
