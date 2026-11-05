@@ -101,22 +101,25 @@ jobs:
 
       - name: Rename release assets
         env:
+          # TAG_NAME is always v-prefixed (see bin/github-getver.js);
+          # asset filenames carry the bare version, no `v`.
           TAG_NAME: ${{ env.TAG_NAME }}
         run: |
+          VERSION="${TAG_NAME#v}"
           cd artifacts
           shopt -s nullglob
           # electron-builder names the AppImage with arch "x86_64" (not "x64")
-          zip -9 "KiriMoto-Ubuntu-x64-${TAG_NAME}.zip" KiriMoto-linux-x86_64.AppImage
+          zip -9 "KiriMoto-Ubuntu-x64-${VERSION}.zip" KiriMoto-linux-x86_64.AppImage
           for f in KiriMoto-mac-*.dmg; do
             case "$f" in
-              *arm64*) mv "$f" "KiriMoto-MacOS-arm-${TAG_NAME}.dmg" ;;
-              *x64*)   mv "$f" "KiriMoto-MacOS-x64-${TAG_NAME}.dmg" ;;
+              *arm64*) mv "$f" "KiriMoto-MacOS-arm-${VERSION}.dmg" ;;
+              *x64*)   mv "$f" "KiriMoto-MacOS-x64-${VERSION}.dmg" ;;
             esac
           done
           for f in KiriMoto-win-*.exe KiriMoto-win-*.zip; do
             case "$f" in
-              *.exe) mv "$f" "KiriMoto-Windows-x64-${TAG_NAME}.exe" ;;
-              *.zip) mv "$f" "KiriMoto-Windows-x64-${TAG_NAME}.zip" ;;
+              *.exe) mv "$f" "KiriMoto-Windows-x64-${VERSION}.exe" ;;
+              *.zip) mv "$f" "KiriMoto-Windows-x64-${VERSION}.zip" ;;
             esac
           done
           ls -l
@@ -164,6 +167,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # v-prefixed for both triggers. For tag pushes the tag already
+          # exists on HEAD and is reused; for workflow_dispatch the action
+          # creates it on the build commit (github.sha) when missing.
           tag_name: ${{ env.TAG_NAME }}
           name: Release ${{ env.TAG_NAME }}
           draft: false
