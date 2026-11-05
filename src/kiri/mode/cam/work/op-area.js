@@ -740,7 +740,9 @@ function resampleRing(poly, n, start) {
  * monotone progression from the outer boundary inward to the part wall:
  * the spiral starts with a full revolution on the outermost loop, morphs
  * through the intermediate contours and ends with a full revolution
- * around the part wall, where the optional finish ring is appended.
+ * around the part wall, where the optional finish ring is appended —
+ * unless that ring duplicates a full revolution the spiral already
+ * cuts exactly (see stitchRegion()), in which case it is omitted.
  *
  * @param {Polygon[][]} rings one entry per offset depth (outermost/wall
  *   ring first), each holding the polygons generated at that depth
@@ -748,7 +750,8 @@ function resampleRing(poly, n, start) {
  * @param {Polygon[]} opts.outs output collector for generated polys
  * @param {number} opts.spacing resample spacing (stepover / 2)
  * @param {boolean} [opts.finish] append a full closed finish ring along
- *   the wall allowance contour (default true)
+ *   the wall allowance contour, skipped when it duplicates an exact
+ *   revolution of the spiral (default true)
  * @param {number} [opts.blend] fraction of a revolution over which the
  *   morph to the next ring happens (default 0.25)
  * @returns {boolean} true when a spiral was generated
@@ -820,7 +823,15 @@ function stitchSpiral(rings, opts) {
         if (stitched) {
             spiraled = true;
             result.push(stitched.spiral);
-            if (finish) {
+            // skip the finish ring when it duplicates a full revolution
+            // the spiral already cuts exactly: for pocket-style regions
+            // (no wall) it is loops[0], identical to revolution 0; for
+            // annulus regions it is the wall contour, identical to the
+            // final revolution when the wall is the innermost loop.
+            // when the helical plunge along revolution 0 lands (task
+            // #5c71df7e), revolution 0 stops being a full-depth pass and
+            // the pocket-style finish ring must be reinstated
+            if (finish && !stitched.finish_dup) {
                 result.push((stitched.wall ?? stitched.loop).clone(true).setClosed());
             }
             if (stitched.remainder.length) {
@@ -853,7 +864,15 @@ function stitchSpiral(rings, opts) {
  * @param {number} opts.spacing resample spacing (stepover / 2)
  * @param {number} opts.blend fraction of a revolution used to morph
  * @returns {{ spiral: Polygon, wall: Polygon, loop: Polygon,
- *            remainder: Polygon[] } | null}
+ *            remainder: Polygon[], finish_dup: boolean } | null}
+ *   `finish_dup` is true when the caller's finish ring candidate
+ *   (`wall`, or `loop` for pocket-style regions) coincides with a full
+ *   revolution the spiral already cuts exactly: revolution 0 for
+ *   pocket-style regions (ring == loops[0]), or the final revolution
+ *   for annulus regions whose wall is the innermost loop. only the
+ *   first and last rings receive exact full revolutions; intermediate
+ *   rings are visited via blending only, so a wall there is not a
+ *   duplicate and the finish ring remains necessary
  */
 function stitchRegion(levels, opts) {
     const spacing = opts.spacing;
@@ -917,6 +936,12 @@ function stitchRegion(levels, opts) {
         // wall. pocket-style loops are already in this order.
         loops.sort((a, b) => Math.abs(b.area()) - Math.abs(a.area()));
     }
+    // the wall terminates the sorted progression when it is the innermost
+    // (smallest) loop, in which case the final revolution cuts it exactly
+    // and an appended finish ring would traverse it a second time. checked
+    // before the direction normalization below, which may replace loops
+    // with reversed clones and break reference equality
+    let wallIsLast = wall && loops[loops.length - 1] === wall;
     // the spiral must traverse every loop in the same rotational
     // direction, so flip any loop running opposite to the first.
     // clones keep the original rings intact for the caller's fallback
@@ -981,7 +1006,7 @@ function stitchRegion(levels, opts) {
         return null;
     }
 
-    return { spiral, wall, loop: loops[0], remainder };
+    return { spiral, wall, loop: loops[0], remainder, finish_dup: wall ? wallIsLast : true };
 }
 
 function omitOuter(polys) {
