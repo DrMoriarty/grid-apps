@@ -22,9 +22,12 @@ There is **no test suite, linter, or typechecker for `src/`**. Verification = su
 npm run setup     # REQUIRED after clone and after dependency changes
 npm run dev       # bundle (dev) + start server on :8080  → open http://localhost:8080/kiri
 npm run pack-dev  # bundle only: esbuild apps + dryrun + dev bundles (fast sanity check)
+npm run smoke     # headless Chrome load test: all 3 apps must init (no uncaught errors, curtain lifted, no 404s)
 npm run start     # full prebuild + Electron desktop app
 npm run prod      # production bundle + server
 ```
+
+Verification for any task touching `src/` = `npm run pack-dev` + `npm run smoke` (catches load-time errors esbuild cannot; requires system Chrome; see `bin/smoke.mjs`). It does not replace manual feature checks.
 
 Gotchas:
 

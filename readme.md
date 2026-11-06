@@ -90,6 +90,22 @@ npm run setup
 npm run dev
 ```
 
+## Headless Smoke Test
+
+After building (`npm run pack-dev`), verify all three apps actually load in a browser:
+
+```
+npm run smoke
+```
+
+Launches headless Chrome against a local `gs-app-server` instance and fails on
+uncaught load-time errors (ReferenceError/TypeError/SyntaxError), unfinished app
+init (loading curtain never lifts) or HTTP 404s on critical resources
+(`/lib/main/*.js` bundles). Options: `--apps=kiri,mesh,void`, `--port=8099`,
+`--timeout=20`, `--chrome=/path/to/chrome`. Requires a system Chrome/Chromium
+install. This catches load breakage only — it does not replace manual feature
+verification.
+
 ## TrueNAS Via YAML
 
 `Apps > Discover Apps > Install via YAML`

@@ -117,6 +117,7 @@
         "preinstall": "node bin/install-pre.js",
         "prod": "npm run pack-prod && gs-app-server",
         "setup": "npm run clean && npm i && npm run webpack-ext",
+        "smoke": "node bin/smoke.mjs",
         "start-dbg": "npm run prebuild && electron . --debugg",
         "start-ddb": "npm run prebuild && electron . --devel --debugg",
         "start-dev": "npm run prebuild prod && electron . --devel",
