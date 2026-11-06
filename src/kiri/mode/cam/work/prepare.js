@@ -723,13 +723,17 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         }
 
         if (depthFirst) {
+            // track which depth levels have already emitted their first
+            // (fully-engaged) cut so later step-over groups at the same
+            // level run at full feed (mirrors non-depth-first count === 1)
+            let engagedLevels = {};
             for (let i=0; i<depthData.length; i++) {
-                descend(depthData.slice(i), undefined, outline);
+                descend(depthData.slice(i), undefined, outline, engagedLevels);
             }
         }
     }
 
-    function descend(stack, inside, outline) {
+    function descend(stack, inside, outline, engaged = {}) {
         if (stack.length === 0) return;
         let tops = stack[0];
         let flat = (outline ? POLY.flatten(tops) : tops).filter(poly => !poly.marked);
@@ -749,17 +753,22 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
                 let output = [];
                 setTravelBoundary(tops.tool_shadow);
                 emit_flat([ poly ], output);
-                let engage = true;
+                // engage feed only on the first cut into fresh material
+                // at this depth level; step-over groups run at full feed.
+                // stack length maps 1:1 to depth level within a pocket call
+                let level = stack.length;
+                let engage = !engaged[level];
+                engaged[level] = true;
                 for (let poly of output) {
                     polyEmit(poly, CLOSEST_TO_PP, engage);
                     engage = false;
                 }
                 if (outline) {
                     output.forEach(poly => {
-                        descend(stack.slice(1), poly, outline);
+                        descend(stack.slice(1), poly, outline, engaged);
                     });
                 } else {
-                    descend(stack.slice(1), poly, outline);
+                    descend(stack.slice(1), poly, outline, engaged);
                 }
             } else {
                 return;
