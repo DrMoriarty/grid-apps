@@ -777,7 +777,9 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
     }
 
     function emitTraces(camLines) {
-        poly2polyEmit(camLines, printPoint, polyEmit, {
+        // poly2polyEmit passes a 1-based counter as 3rd arg; polyEmit expects
+        // a boolean engage flag — only the first cut gets the engage feed
+        poly2polyEmit(camLines, printPoint, (poly, index, count) => polyEmit(poly, index, count === 1), {
             swapdir: false,
             weight: camInnerFirst
         });
