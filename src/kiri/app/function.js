@@ -363,11 +363,21 @@ function prepareSlices(callback, scale = 1, offset = 0) {
  * @param {number} [scale=1] - kept for signature parity with prepareSlices
  */
 function restoreSliceView(callback, scale = 1) {
-    const { conf, mode, view, show } = api;
+    const { conf, mode, view, show, stacks } = api;
     const camOrLaser = mode.is_cam() || mode.is_laser();
 
     view.set_slice();
     conf.save();
+
+    // leaving preview: rendered toolpath is stale and its completion mark
+    // would block re-entering preview (mirrors clear_progress() done by
+    // the full slicing path)
+    complete.preview = undefined;
+
+    // drop previously rendered stacks (slice stacks still registered when
+    // coming from preview, plus the print stack) so rebuilds don't
+    // duplicate layers; mirrors stacks.clear() in the full slicing path
+    stacks.clear();
 
     const widgets = api.widgets.all()
         .filter(w => !w.track.ignore && !w.meta.disabled && w.slices);
