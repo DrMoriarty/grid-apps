@@ -69,13 +69,13 @@ function setVisible(label, bool) {
     }
 }
 
-function create(name, view) {
+function create(name, view, opts = {}) {
     if (stacks[name]) {
         return stacks[name];
     }
     const stack = stacks[name] = {
         layers: [ ],
-        obj: new Stack(view, freeMem, api.conf.get().controller.shiny),
+        obj: new Stack(view, opts.freeMem ?? freeMem, api.conf.get().controller.shiny),
         add: function(layers) {
             let lmap = layers.layers;
             let map = stack.obj.addLayers(layers);
