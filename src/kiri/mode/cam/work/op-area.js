@@ -616,6 +616,14 @@ class OpArea extends CamOp {
             return;
         }
 
+        // clear one-shot "used" markers consumed by the area selection
+        // loop below, so repeated prepare (eg. a cached slice restore that
+        // skips re-slicing) regenerates the full toolpath instead of
+        // finding every area already used and emitting travel-only output
+        for (let area of areas ?? []) {
+            area.used = false;
+        }
+
         // process areas as pockets
         while (areas?.length) {
             let min = {

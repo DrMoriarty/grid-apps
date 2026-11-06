@@ -431,12 +431,17 @@ function preparePreview(callback, scale = 1, offset = 0) {
             if (++feature.pmode > 2) {
                 feature.pmode = 1;
             }
-        } else {
+        } else if (view.is_preview() || stacks.getStack('print')) {
+            // already in preview, or the rendered print stack is intact:
+            // nothing to re-render
             if (callback) {
                 callback();
             }
             return;
         }
+        // preview was marked complete but the print stack was cleared
+        // (eg. returning from animation or arrange, which dispose all
+        // stacks): fall through to switch views and force a full re-render
     }
 
     if (!complete.slice) {
