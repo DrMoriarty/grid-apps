@@ -638,14 +638,19 @@ function clear_progress() {
 // widget.add is required: a newly added widget has no cached slices.
 // mouse.drag.done fires only after a widget drag (not camera orbit),
 // see space.js mouse drag wiring.
-api.event.on([
-    'widget.scale',
-    'widget.rotate',
-    'widget.mirror',
-    'mouse.drag.done',
-    'platform.layout',
-    'widget.add'
-], () => clear_progress());
+// called from api.js after the api object is initialized: this module
+// is in an import cycle with api.js, so api.event cannot be touched
+// at module top level (temporal dead zone).
+export function initSliceCache() {
+    api.event.on([
+        'widget.scale',
+        'widget.rotate',
+        'widget.mirror',
+        'mouse.drag.done',
+        'platform.layout',
+        'widget.add'
+    ], () => clear_progress());
+}
 
 // extend API (api.function)
 export const functions = {

@@ -12,7 +12,7 @@ import { broker } from '../../moto/broker.js';
 import { client as workers } from './workers.js';
 import { consts, LISTS as lists } from './consts.js';
 import { device, devices } from './devices.js';
-import { functions } from './function.js';
+import { functions, initSliceCache } from './function.js';
 import { group as groupModule } from './groups.js';
 import { help as helpModule } from './help.js';
 import { image as imageModule } from './image.js';
@@ -302,3 +302,7 @@ export const api = {
 
 // allow widget to straddle client / worker FOR NOW
 self.kiri_api = api;
+
+// register slice-cache invalidation events (function.js is in an
+// import cycle with this module, so it cannot subscribe on its own)
+initSliceCache();
