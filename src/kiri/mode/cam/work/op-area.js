@@ -867,7 +867,14 @@ function stitchSpiral(rings, opts) {
             // #5c71df7e), revolution 0 stops being a full-depth pass and
             // the pocket-style finish ring must be reinstated
             if (finish && !stitched.finish_dup) {
-                result.push((stitched.wall ?? stitched.loop).clone(true).setClosed());
+                let ring = (stitched.wall ?? stitched.loop).clone(true).setClosed();
+                // flag for the emitter: when this ring is the first cut at
+                // its depth (tool above ring z at emit time) it engages the
+                // material around the full tool circumference and runs at
+                // the camFullEngage feed scale. cutTabs() below may rebuild
+                // the polyline, so the marker is carried through it
+                ring.finish_ring = true;
+                result.push(ring);
             }
             if (stitched.remainder.length) {
                 result.push(...stitched.remainder);

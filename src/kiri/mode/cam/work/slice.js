@@ -848,6 +848,10 @@ function cutTabs(tabs, offset) {
         if (hi.length) {
             let heal = POLY.reconnect([ ...lo, ...hi ], false);
             POLY.setWinding(heal, poly.isClockwise());
+            // carry emitter markers through the rebuild (same source poly)
+            if (poly.finish_ring) {
+                heal.forEach(hp => hp.finish_ring = true);
+            }
             out.push(...heal);
         } else {
             out.push(poly);

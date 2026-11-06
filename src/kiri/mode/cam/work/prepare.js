@@ -809,6 +809,17 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         // which rebuilds the polygon and would drop custom properties
         let spiraling = poly.spiral === true;
 
+        // finish ring engage detection must happen before any emission
+        // below changes the print point. the ring is a full-engagement
+        // cut when the tool starts it from above the ring's z, i.e. the
+        // ring is the first cut at this depth. when it follows the spiral
+        // (or any other loop at the same depth) the tool is already at
+        // depth and material around the ring is partially cleared, so it
+        // runs at full feed. printPoint is in work coordinates while poly
+        // points are in widget coordinates, hence the wmz shift
+        let ringEngage = poly.finish_ring === true &&
+            printPoint.z - wmz > poly.getZ() + 0.001;
+
         if (poly.isClosed()) {
             // only look for the cloests starting point for closed loops
             if (index === CLOSEST_TO_PP) {
@@ -922,7 +933,10 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         }
 
         let lastOut;
-        let opts = engage ? { feed: feedRate * camFullEngage } : {};
+        // engage is strictly boolean: the poly2polyEmit emitter signature
+        // passes an emission counter here, which must not enable the ramp
+        let opts = (engage === true || ringEngage) ?
+            { feed: feedRate * camFullEngage } : {};
 
         // arc output must handle shortened arcs from ease-down
         // future support for 3d helical arcs will fix this
