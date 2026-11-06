@@ -708,7 +708,10 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
             } else {
                 // if not depth first, output the polys in slice order
                 setTravelBoundary(slice.tool_shadow.clone(true));
-                poly2polyEmit(polys, printPoint, polyEmit, { swapdir: false });
+                // poly2polyEmit passes a 1-based counter as 3rd arg; polyEmit
+                // expects a boolean engage flag — only the first cut of this
+                // layer gets the engage feed
+                poly2polyEmit(polys, printPoint, (poly, index, count) => polyEmit(poly, index, count === 1), { swapdir: false });
                 newLayer();
             }
             progress(++total, slices.length);
