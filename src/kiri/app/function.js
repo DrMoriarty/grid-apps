@@ -27,12 +27,18 @@ let order;
 /**
  * Prepare and execute slicing for all widgets on the platform.
  * Main slicing function that:
+ * - Returns early from cache when nothing changed since the last slice
  * - Takes screenshots for export/preview
  * - Handles belt mode layout
  * - Slices each widget sequentially via worker
  * - Tracks progress across all widgets
  * - Renders sliced layers to stacks
  * - Emits slice.begin, slice, slice.end, slice.error events
+ *
+ * The cache (complete.slice) is invalidated by:
+ * - settings changes (conf/manager.js clear_progress)
+ * - widget geometry/layout changes (see event subscriptions below)
+ * - any widget flagged modified (e.g. belt mode re-sync)
  *
  * @param {function} [callback] - Called when slicing completes
  * @param {number} [scale=1] - Progress bar scale factor (for chaining operations)
@@ -41,20 +47,32 @@ let order;
 function prepareSlices(callback, scale = 1, offset = 0) {
     const { conf, event, feature, hide, mode, view, platform, show, stacks } = api;
 
+    if (mode.is_sla() && !callback) {
+        // in SLA mode, slice and preview are the same thing
+        callback = () => preparePreview(undefined, 0.25, 0.75);
+    }
+
+    // cached path: slices complete and nothing modified since the last
+    // slice, so skip the worker pipeline entirely and rebuild the layer
+    // stacks (destroyed on arrange entry) from retained widget slices
+    if (complete.slice) {
+        const settings = conf.get();
+        const modified = api.widgets.all().some(w => w.modified);
+        if (!modified && !settings.process.xray && !settings.process.xrayi) {
+            return restoreSliceView(callback, scale);
+        }
+    }
+
     if (view.is_arrange()) {
         // in arrange mode, create a screenshot at the start slicing
         // this can be used later by exports and rendered on some devices
+        // (the cached path above reuses the previously saved snapshot)
         let snap = space.screenshot();
         view.snapshot = snap.substring(snap.indexOf(",") + 1);
         client.snap(space.screenshot2({ width: 640 }));
         let bambu = view.bambu = { };
         space.screenshot3({ width: 512, out(png) { bambu.s512 = png } });
         space.screenshot3({ width: 128, out(png) { bambu.s128 = png } });
-    }
-
-    if (mode.is_sla() && !callback) {
-        // in SLA mode, slice and preview are the same thing
-        callback = preparePreview;
     }
 
     order = api.selection.count() ?
@@ -232,7 +250,9 @@ function prepareSlices(callback, scale = 1, offset = 0) {
         onupdate(0.0001, "slicing");
 
         // store slicing visuals
-        widget.stack = api.stacks.create(widget.id, widget.mesh);
+        // freeMem:false keeps slice layer data renderable so the stack can
+        // be rebuilt from widget.slices after arrange clears the stacks
+        widget.stack = api.stacks.create(widget.id, widget.mesh, { freeMem: false });
 
         // compensate for zcut (widget moved through floor)
         widget.stack.obj.view.position.z = widget.track.zcut || 0;
@@ -329,6 +349,54 @@ function prepareSlices(callback, scale = 1, offset = 0) {
     // do any global setup / state management
     // then kick off slicing chain
     sliceSetup();
+}
+
+/**
+ * Restore slice view from cached slices without re-slicing.
+ * Called when prepareSlices() hits a valid cache (complete.slice set and
+ * no widget modified). Rebuilds the layer stacks that were cleared when
+ * entering arrange view, re-applies slice view visuals (mirrors the
+ * scale === 1 path of sliceDone()) and reuses the snapshot taken during
+ * the original slicing instead of re-taking screenshots.
+ *
+ * @param {function} [callback] - Called after the slice view is restored
+ * @param {number} [scale=1] - kept for signature parity with prepareSlices
+ */
+function restoreSliceView(callback, scale = 1) {
+    const { conf, mode, view, show } = api;
+    const camOrLaser = mode.is_cam() || mode.is_laser();
+
+    view.set_slice();
+    conf.save();
+
+    const widgets = api.widgets.all()
+        .filter(w => !w.track.ignore && !w.meta.disabled && w.slices);
+
+    for (let widget of widgets) {
+        // rebuild stack cleared on arrange entry
+        widget.stack = api.stacks.create(widget.id, widget.mesh, { freeMem: false });
+        // compensate for zcut (widget moved through floor)
+        widget.stack.obj.view.position.z = widget.track.zcut || 0;
+        widget.render(widget.stack);
+        // rotate stack for belt beds
+        if (widget.belt) {
+            widget.stack.obj.rotate(widget.belt);
+        }
+        // restore slice view visuals
+        const scheme = getColorScheme();
+        widget._setWireframe(false, scheme.wireframe.color, scheme.wireframe.opacity);
+        widget.setOpacity(camOrLaser ? scheme.views.SLICE.sliced_opacity ?? 0.2 : scheme.views.PREVIEW?.sliced_opacity ?? 0.0);
+        widget.setColor(scheme.widget.deselected);
+    }
+
+    view.update_slider_max(true);
+    show.layer(-1, 0);
+    view.update_stack_labels();
+    show.progress(0);
+    if (typeof callback === 'function') {
+        callback();
+    }
+    space.refresh();
 }
 
 /**
@@ -564,6 +632,20 @@ function parseCode(code, type) {
 function clear_progress() {
     complete = {};
 }
+
+// invalidate cached slices/preview when widget geometry or platform
+// layout changes (settings changes are handled in conf/manager.js).
+// widget.add is required: a newly added widget has no cached slices.
+// mouse.drag.done fires only after a widget drag (not camera orbit),
+// see space.js mouse drag wiring.
+api.event.on([
+    'widget.scale',
+    'widget.rotate',
+    'widget.mirror',
+    'mouse.drag.done',
+    'platform.layout',
+    'widget.add'
+], () => clear_progress());
 
 // extend API (api.function)
 export const functions = {

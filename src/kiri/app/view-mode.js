@@ -47,8 +47,10 @@ function setViewMode(mode) {
         case VIEWS.ARRANGE:
             $('view-arrange').classList.add('selected');
             // $('render-tools').classList.remove('hide');
-            api.function.clear_progress();
-            api.client.clear();
+            // note: slice cache (function.complete) and worker geometry cache
+            // are intentionally preserved here so switching tabs does not
+            // force a full re-slice. only the rendered stacks are discarded;
+            // they are rebuilt from widget.slices on the next slice view.
             STACKS.clear();
             api.visuals.hide_slider();
             api.visuals.update_speeds();
