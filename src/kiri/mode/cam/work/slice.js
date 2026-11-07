@@ -9,6 +9,7 @@ import { polygons as POLY } from '../../../../geo/polygons.js';
 import { setSliceTracker } from '../../../core/slice.js';
 import { Slicer as cam_slicer } from './slicer-cam.js';
 import { getStockModel } from './stock.js';
+import { stockDebugSlice } from './stock-debug.js';
 import { Tool } from '../core/tool.js';
 import { util } from '../../../../geo/base.js';
 
@@ -468,6 +469,18 @@ export async function cam_slice(settings, widget, onupdate, ondone) {
     }
     setSliceTracker();
 
+    // debug: stock removal heat layer, built once per cycle after all ops
+    // have recorded sweeps into the stock model (devel-gated, mirroring the
+    // "shadow" debug layer in op-shadow.js and "clip.tab"/"clip.to" in
+    // topo3.js). the layer lands in the regular preview layer list, where
+    // it can be toggled like any named layer.
+    if (settings.controller.devel && state.stockModel) {
+        let stockDebug = stockDebugSlice(state.stockModel);
+        if (stockDebug) {
+            addSlices(stockDebug, false);
+        }
+    }
+
     // reindex
     sliceAll.forEach((slice, index) => slice.index = index);
 
@@ -860,6 +873,29 @@ function cutTabs(tabs, offset) {
             // carry emitter markers through the rebuild (same source poly)
             if (poly.finish_ring) {
                 heal.forEach(hp => hp.finish_ring = true);
+            }
+            // carry the spiral revolution-0 engage markers through the
+            // rebuild (task #cfca80a4): fragment points are clipper copies
+            // of the source spiral's points, so each is matched back to
+            // its origin by 2D proximity
+            if (poly.points.length && poly.points[0].rev0) {
+                let src = poly.points;
+                heal.forEach(hp => {
+                    for (let p of hp.points) {
+                        let bd = Infinity;
+                        let bp = null;
+                        for (let sp of src) {
+                            let d = sp.distTo2D(p);
+                            if (d < bd) {
+                                bd = d;
+                                bp = sp;
+                            }
+                        }
+                        if (bp && bp.rev0) {
+                            p.rev0 = true;
+                        }
+                    }
+                });
             }
             out.push(...heal);
         } else {
