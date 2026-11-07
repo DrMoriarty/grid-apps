@@ -2,6 +2,7 @@
 
 import { CamOp } from '../core/op.js';
 import { OpArea } from './op-area.js';
+import { recordAreaSweep } from './stock.js';
 
 class OpTrace extends CamOp {
     constructor(state, op) {
@@ -44,7 +45,15 @@ class OpTrace extends CamOp {
             tr_type: offset
         };
         this.op_trace = new OpArea(state, trace);
-        return this.op_trace.slice(progress);
+        await this.op_trace.slice(progress);
+        // record this pass' material removal into the stock model. all
+        // trace types (none/inside/outside offsets, edge/surface
+        // selections, clear mode) emit camLines with cut z already baked
+        // in, so the shared recorder folds the tool profile along them.
+        // traces hugging vertical walls sweep half the tool diameter to
+        // each side of the centerline — the profile convolution covers
+        // the wall cells on both sides (see StockModel.#stamp)
+        recordAreaSweep(state, 'trace', trace, this.op_trace);
     }
 
     async prepare(ops, progress) {

@@ -3,6 +3,7 @@
 import { CamOp } from '../core/op.js';
 import { Tool } from '../core/tool.js';
 import { generate as Topo } from './topo3.js';
+import { recordAreaSweep } from './stock.js';
 import { newPoint } from '../../../../geo/point.js';
 import { newPolygon } from '../../../../geo/polygon.js';
 import { newSlice } from '../../../core/slice.js';
@@ -213,6 +214,25 @@ class OpContour extends CamOp {
 
         // computed if set to 0
         this.tolerance = topo.tolerance;
+
+        // record this op's material removal into the stock model. sliceOut
+        // camLines (X/Y scanlines, merged, or radial fan rays) are
+        // terrain-following world-space polylines with cut z baked in
+        // (z limits, clamping, tab lifts and void-skip breaks already
+        // applied by topo3), so the shared recorder folds the tool
+        // profile along them. the journal carries the axis as the record
+        // mode and the op's `leave` as the leave parameter
+        recordAreaSweep(state, 'contour', {
+            mode: op.axis.toLowerCase(),
+            rename: op.rename,
+            tool: op.tool,
+            leave: op.leave,
+            ov_topz: op.ov_topz,
+            ov_botz: op.ov_botz
+        }, (this.sliceOut ?? [])
+            .filter(s => s.camLines && s.camLines.length)
+            .map(s => s.camLines)
+            .flat());
     }
 
     prepare(ops, progress) {

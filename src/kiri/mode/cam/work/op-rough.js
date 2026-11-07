@@ -1,8 +1,8 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { CamOp } from '../core/op.js';
-import { Tool } from '../core/tool.js';
 import { OpArea, omitMatching } from './op-area.js';
+import { recordAreaSweep } from './stock.js';
 import { newPolygon } from '../../../../geo/polygon.js';
 import { polygons as POLY } from '../../../../geo/polygons.js';
 import { util as base_util } from '../../../../geo/base.js';
@@ -134,75 +134,15 @@ class OpRough extends CamOp {
 
     /**
      * Record one expanded OpArea pass (main clear, flats, cutout trace) into
-     * the stock removal model (StockModel, see stock.js). Called after the
-     * pass' slice() has populated its per-layer slices with camLines.
-     *
-     * The sweep is the max-convolution of the tool profile over each layer's
-     * camLines: layer z values are already baked into the path points by
-     * OpArea.slice() (`down` lerp planes for clear, flat planes + flatOff,
-     * trace depths, leave_z lifts, tab lifts), so recording needs no extra z
-     * bookkeeping. The model's #strike() folds the profile along the paths
-     * and filters points at or above the stock top (retracts/air moves
-     * remove nothing).
-     *
-     * leave (xy) and leave_z are journalled as pass parameters; leave_xy is
-     * inherently respected by the sweep because OpArea already insets the
-     * centerlines by tool radius + leave, so the profile convolution never
-     * reaches the leave shell.
-     *
-     * Through-hole handling (omitthru): state.shadow.holes are either
-     * excluded from the clear clip (contour bypasses the hole, sweep never
-     * touches cells above it) or deliberately cut through (omitthru), and
-     * the cutout trace follows the same contour. Either way the recorded
-     * camLines mirror the real contour, so the model reflects the actual
-     * sweep — holes cannot "regrow" unless the path really passes over them.
+     * the stock removal model. Delegates to the shared recordAreaSweep()
+     * helper (stock.js) — see its docblock for the sweep semantics (profile
+     * max-convolution, above-stock filtering, leave journaling, indexed
+     * invalidation) and the omitthru/holes rationale.
      *
      * @param {OpArea} area a pass from ops_list, post-slice()
      */
     recordStockSweep(area) {
-        let { state } = this;
-        let stockModel = state.stockModel;
-        if (!stockModel) {
-            return;
-        }
-        // 4th axis work rotates the widget out of the heightmap's unrotated
-        // XY frame (see op-index.js): sweeps cannot be folded. invalidate so
-        // consumers fall back to model-less behavior instead of trusting an
-        // empty (fully-stock) map
-        if (state.isIndexed) {
-            stockModel.valid = false;
-            return;
-        }
-        if (!stockModel.valid) {
-            return;
-        }
-        let conf = area.op;
-        // flatten per-layer slices into camLines polylines (z in points)
-        let camLines = (area.areas ?? [])
-            .flat()
-            .filter(s => s.camLines && s.camLines.length)
-            .map(s => s.camLines)
-            .flat();
-        if (!camLines.length) {
-            return;
-        }
-        // dedicated instance so generateProfile (below) doesn't leave the
-        // op tool's cached profile at the stock model's resolution
-        let tool = new Tool(state.settings, conf.tool);
-        stockModel.recordSweep({
-            type: 'rough',
-            mode: conf.mode,
-            rename: conf.rename,
-            thru: conf.thru,
-            tool,
-            profile: tool.generateProfile(stockModel.resolution).profile,
-            camLines,
-            down: conf.down,
-            leave: conf.leave_xy,
-            leave_z: conf.leave_z,
-            ov_topz: conf.ov_topz,
-            ov_botz: conf.ov_botz
-        });
+        recordAreaSweep(this.state, 'rough', area.op, area);
     }
 
     /**

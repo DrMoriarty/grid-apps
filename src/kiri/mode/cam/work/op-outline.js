@@ -2,6 +2,7 @@
 
 import { CamOp } from '../core/op.js';
 import { OpArea } from './op-area.js';
+import { recordAreaSweep } from './stock.js';
 
 class OpOutline extends CamOp {
     constructor(state, op) {
@@ -81,6 +82,12 @@ class OpOutline extends CamOp {
 
         for (let op of this.ops_list) {
             await op.slice(progress);
+            // record this pass' material removal into the stock model.
+            // both outline modes (outside perimeter and inside/on-line)
+            // expand to a single shadow-based drape trace pass whose
+            // camLines carry the cut z (down planes, tabs, leave_z), so
+            // the shared recorder folds the tool profile along them
+            recordAreaSweep(state, 'outline', op.op, op);
         }
     }
 

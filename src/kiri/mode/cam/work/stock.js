@@ -1,5 +1,7 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
+import { Tool } from '../core/tool.js';
+
 /**
  * CAM stock removal model (Phase 1 skeleton).
  *
@@ -295,6 +297,91 @@ export class StockModel {
     get swapCount() {
         return this.swaps.length;
     }
+}
+
+/**
+ * Collect the camLines polylines of a sliced OpArea pass. OpArea.slice()
+ * accumulates per-area stacks of per-layer slices in `area.areas`, each
+ * slice carrying its cutting polylines in `slice.camLines` with the layer z
+ * (down lerp planes, flat planes + flatOff, trace depths, leave_z lifts, tab
+ * lifts) already baked into the point z values.
+ *
+ * @param {OpArea} area a pass instance, post-slice()
+ * @returns {Array} flat list of camLines polylines (possibly empty)
+ */
+export function areaPassCamLines(area) {
+    return (area?.areas ?? [])
+        .flat()
+        .filter(s => s.camLines && s.camLines.length)
+        .map(s => s.camLines)
+        .flat();
+}
+
+/**
+ * Record one pass of an OpArea-based op into the widget's stock removal
+ * model. Shared by every camLines-producing op (rough since phase 1,
+ * outline/trace/pocket/contour since phase 2): the sweep is the
+ * max-convolution of the op tool's raster profile along the pass camLines,
+ * folded by StockModel.#strike() which filters points at or above the stock
+ * top (plunges from above only start cutting below the surface, retracts
+ * and traverses never touch). Tab/clamp lifts and ov_topz/ov_botz are
+ * already baked into the recorded points by the generating op.
+ *
+ * leave (xy) and leave_z are journalled as pass parameters. leave_xy is
+ * inherently respected by the sweep when the op insets its centerlines by
+ * tool radius + leave (clear mode firstOff, trace offsets), so the profile
+ * convolution never reaches the leave shell — the model records the actual
+ * sweep, not the theoretical full removal.
+ *
+ * 4th axis work (state.isIndexed) rotates the widget out of the heightmap's
+ * unrotated XY frame: the model is marked invalid so consumers fall back to
+ * model-less behavior instead of trusting an empty (fully-stock) map.
+ *
+ * @param {Object} state shared CAM op state (slice.js); must carry
+ *   stockModel, settings, isIndexed
+ * @param {string} type op type for the journal record ("rough",
+ *   "outline", "trace", "pocket", "contour", ...)
+ * @param {Object} conf pass parameters: { tool, mode, rename, thru, down,
+ *   leave, leave_xy, leave_z, ov_topz, ov_botz } — missing fields journal
+ *   as undefined
+ * @param {OpArea|Array} area a sliced OpArea pass, or a ready-made flat
+ *   camLines array (contour's topo slices)
+ * @returns {Object|undefined} the journal record, or undefined when nothing
+ *   was recorded (no model, invalid model, no camLines)
+ */
+export function recordAreaSweep(state, type, conf, area) {
+    const stockModel = state.stockModel;
+    if (!stockModel) {
+        return undefined;
+    }
+    if (state.isIndexed) {
+        stockModel.valid = false;
+        return undefined;
+    }
+    if (!stockModel.valid) {
+        return undefined;
+    }
+    const camLines = Array.isArray(area) ? area : areaPassCamLines(area);
+    if (!camLines.length) {
+        return undefined;
+    }
+    // dedicated instance so generateProfile (below) doesn't leave the op
+    // tool's cached profile at the stock model's resolution
+    const tool = new Tool(state.settings, conf.tool);
+    return stockModel.recordSweep({
+        type,
+        mode: conf.mode,
+        rename: conf.rename,
+        thru: conf.thru,
+        tool,
+        profile: tool.generateProfile(stockModel.resolution).profile,
+        camLines,
+        down: conf.down,
+        leave: conf.leave_xy ?? conf.leave,
+        leave_z: conf.leave_z,
+        ov_topz: conf.ov_topz,
+        ov_botz: conf.ov_botz
+    });
 }
 
 /**
