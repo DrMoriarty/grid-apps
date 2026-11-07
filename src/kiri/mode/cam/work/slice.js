@@ -9,6 +9,7 @@ import { polygons as POLY } from '../../../../geo/polygons.js';
 import { setSliceTracker } from '../../../core/slice.js';
 import { Slicer as cam_slicer } from './slicer-cam.js';
 import { getStockModel } from './stock.js';
+import { stockDebugSlice } from './stock-debug.js';
 import { Tool } from '../core/tool.js';
 import { util } from '../../../../geo/base.js';
 
@@ -467,6 +468,18 @@ export async function cam_slice(settings, widget, onupdate, ondone) {
         opSum += weight;
     }
     setSliceTracker();
+
+    // debug: stock removal heat layer, built once per cycle after all ops
+    // have recorded sweeps into the stock model (devel-gated, mirroring the
+    // "shadow" debug layer in op-shadow.js and "clip.tab"/"clip.to" in
+    // topo3.js). the layer lands in the regular preview layer list, where
+    // it can be toggled like any named layer.
+    if (settings.controller.devel && state.stockModel) {
+        let stockDebug = stockDebugSlice(state.stockModel);
+        if (stockDebug) {
+            addSlices(stockDebug, false);
+        }
+    }
 
     // reindex
     sliceAll.forEach((slice, index) => slice.index = index);
