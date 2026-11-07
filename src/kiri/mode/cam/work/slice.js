@@ -8,6 +8,7 @@ import { ops as OPS } from '../core/ops.js';
 import { polygons as POLY } from '../../../../geo/polygons.js';
 import { setSliceTracker } from '../../../core/slice.js';
 import { Slicer as cam_slicer } from './slicer-cam.js';
+import { getStockModel } from './stock.js';
 import { Tool } from '../core/tool.js';
 import { util } from '../../../../geo/base.js';
 
@@ -410,6 +411,14 @@ export async function cam_slice(settings, widget, onupdate, ondone) {
     // call slice() function on all ops in order
     await setAxisIndex();
     updateSlicer();
+    // stock removal model (per-widget cache, fingerprint-invalidated on
+    // op list / stock / bounds changes). created before the op loop so
+    // ops can record sweeps into it during slice(); rotary ops (index,
+    // lathe) mark it invalid and consumers fall back accordingly.
+    state.stockModel = getStockModel(settings, widget, {
+        stockTop: top_stock,
+        stockBottom: bottom_stock
+    });
     for (let { op, share } of opList) {
         let weight = op.weight();
         // apply operation override vars

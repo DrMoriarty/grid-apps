@@ -73,6 +73,7 @@ function init(worker) {
         for (let widget of Object.values(worker.cache)) {
             delete widget.traces;
             delete widget.topo;
+            delete widget.stockModel;
         }
         send.done({});
     };

@@ -28,6 +28,8 @@ export class OpIndex extends CamOp {
 
         // force recompute of topo
         widget.topo = undefined;
+        // stock removal model is indexed to unrotated XY space
+        widget.stockModel = undefined;
 
         // update slicer for new widget geometry
         updateSlicer();
