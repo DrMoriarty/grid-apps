@@ -199,8 +199,12 @@ class OpArea extends CamOp {
                         shadow = omitMatching(shadow, thruHoles);
                     }
                     // progressive offset of polygons inside area clipped to the shadow
-                    let outs = [];
                     let clip = [];
+                    // full clip before skipclear reduction, and the cleared
+                    // region subtracted from it: kept so the flats fallback
+                    // below can re-raster the full clip and trim pure air
+                    let clipFull = null;
+                    let cleared = null;
                     let firstOff = -(toolDiam / 2 + (op.leave_xy ?? 0));
                     // remove shadow from area
                     if (op.ignore) {
@@ -235,8 +239,9 @@ class OpArea extends CamOp {
                         let tipz = flats ?
                             (f >= zTop - ts_eps ? f - ts_eps : f) :
                             f + (op.leave_z ?? 0);
-                        let cleared = state.stockModel.clearedRegion(clip, tipz);
+                        cleared = state.stockModel.clearedRegion(clip, tipz);
                         if (cleared.length) {
+                            clipFull = clip;
                             let reduced = [];
                             POLY.subtract(clip, cleared, reduced, undefined, undefined, 0);
                             clip = reduced;
@@ -272,64 +277,110 @@ class OpArea extends CamOp {
                     // falls back to the discrete rings below when the
                     // geometry does not support a spiral for this area
                     let doSpiral = op.spiral && !op.walls && !op.omitouter;
+                    // generate the clearing paths (discrete offset rings or a
+                    // stitched spiral) for a clip region. factored out so the
+                    // flats air-trim fallback below can re-run it on the full
+                    // (un-cleared) clip when the reduced clip yields nothing
+                    let genOuts = (gclip) => {
+                        let gouts = [];
+                        let gspiral = false;
+                        if (doSpiral) {
+                            // collect rings per offset depth via the collector.
+                            // the offset accumulator is a throwaway: rings must
+                            // not leak into the output when the stitch succeeds
+                            let rings = [];
+                            POLY.offset(gclip, offsets, {
+                                count: op.steps ?? 999, outs: [], flat: true, z: z - zMov, ...offopt,
+                                call: (polys, count, depth) => { rings[depth] = polys; }
+                            });
+                            // on success the spiral (and optional finish ring)
+                            // are appended to `outs` and its end point becomes
+                            // the start anchor for the next depth's spiral;
+                            // on failure the discrete rings are emitted as-is,
+                            // matching legacy output
+                            let stitched = stitchSpiral(rings, {
+                                outs: gouts,
+                                finish: op.spiral_finish,
+                                spacing: toolOver / 2,
+                                start: spiralRef
+                            });
+                            if (!stitched) {
+                                for (let level of rings) {
+                                    if (level) gouts.push(...level);
+                                }
+                            } else {
+                                gspiral = true;
+                                spiralRef = stitched.end;
+                            }
+                        } else {
+                            //actually offset the walls inwards
+                            POLY.offset(gclip, offsets, {
+                                count: op.walls ? 1 : (op.steps ?? 999), outs: gouts, flat: true, z: z - zMov, ...offopt
+                            });
+                        }
+                        return { outs: gouts, spiral: gspiral };
+                    };
                     // true when this depth produced at least one stitched
                     // spiral: its open fragments get flagged below so the
                     // emitter can apply a helical ease-down along the
                     // spiral's leading revolution
-                    let didSpiral = false;
-                    if (doSpiral) {
-                        // collect rings per offset depth via the collector.
-                        // the offset accumulator is a throwaway: rings must
-                        // not leak into the output when the stitch succeeds
-                        let rings = [];
-                        POLY.offset(clip, offsets, {
-                            count: op.steps ?? 999, outs: [], flat: true, z: z - zMov, ...offopt,
-                            call: (polys, count, depth) => { rings[depth] = polys; }
-                        });
-                        // on success the spiral (and optional finish ring)
-                        // are appended to `outs` and its end point becomes
-                        // the start anchor for the next depth's spiral;
-                        // on failure the discrete rings are emitted as-is,
-                        // matching legacy output
-                        let stitched = stitchSpiral(rings, {
-                            outs,
-                            finish: op.spiral_finish,
-                            spacing: toolOver / 2,
-                            start: spiralRef
-                        });
-                        if (!stitched) {
-                            for (let level of rings) {
-                                if (level) outs.push(...level);
-                            }
-                        } else {
-                            didSpiral = true;
-                            spiralRef = stitched.end;
-                        }
-                    } else {
-                        //actually offset the walls inwards
-                        POLY.offset(clip, offsets, {
-                            count: op.walls ? 1 : (op.steps ?? 999), outs, flat: true, z: z - zMov, ...offopt
-                        });
-                    }
+                    let { outs, didSpiral } = genOuts(clip);
                     // if we see no offsets, re-check the mesh bottom Z then exit
                     if (outs.length === 0) {
-                        if (flats) {
-                            // flats pass: nothing left to cut at this plane,
-                            // move on to the next instead of terminating
-                            zroc += zinc;
-                            lzo = z;
-                            progress(proc + (pinc * zroc), 'clear');
-                            if (z === zs.peek()) break outer;
-                            continue;
+                        if (flats && cleared && clipFull) {
+                            // flats fallback: material left on this plane (a
+                            // thin ledge/ring between an already-cleared cavity
+                            // and the surrounding walls) can be too narrow for
+                            // the tool to fit inside, so offsetting the reduced
+                            // clip yields nothing. re-generate the raster over
+                            // the full (un-cleared) clip — paths then cross the
+                            // cleared air — and trim the segments passing over
+                            // pure air: `cleared` eroded by the tool radius
+                            // marks where the tool disk touches no material at
+                            // all. segments over (or within a radius of)
+                            // material survive, which is what lets the tool
+                            // reach and shave a narrow ledge
+                            let gen = genOuts(clipFull);
+                            if (gen.outs.length) {
+                                let eroded = POLY.offset(cleared, [ -(toolDiam / 2 + ts_eps) ], { z: z - zMov, ...offopt });
+                                let trimmed = [];
+                                if (eroded.length) {
+                                    for (let out of gen.outs) {
+                                        let cutp = out.cut(eroded);
+                                        if (cutp) trimmed.push(...cutp);
+                                        else trimmed.push(out);
+                                    }
+                                } else {
+                                    // cleared region is thinner than the tool
+                                    // radius: the full raster is all reachable
+                                    // material, keep it untrimmed
+                                    trimmed = gen.outs;
+                                }
+                                if (trimmed.length) {
+                                    outs = trimmed;
+                                    didSpiral = gen.spiral;
+                                }
+                            }
                         }
-                        if (bounds && lzo > bounds.min.z) {
-                            // try a bottom layer matching bottom of selection
-                            zs = [ bounds.min.z ];
-                            bounds = undefined;
-                            continue outer;
+                        if (outs.length === 0) {
+                            if (flats) {
+                                // flats pass: nothing left to cut at this plane,
+                                // move on to the next instead of terminating
+                                zroc += zinc;
+                                lzo = z;
+                                progress(proc + (pinc * zroc), 'clear');
+                                if (z === zs.peek()) break outer;
+                                continue;
+                            }
+                            if (bounds && lzo > bounds.min.z) {
+                                // try a bottom layer matching bottom of selection
+                                zs = [ bounds.min.z ];
+                                bounds = undefined;
+                                continue outer;
+                            }
+                            // terminate z descent when no further output possible
+                            break outer;
                         }
-                        // terminate z descent when no further output possible
-                        break outer;
                     }
                     // support legacy outline features
                     if (op.omitouter) {
