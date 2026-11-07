@@ -252,7 +252,7 @@ function renderUpdate(send) {
 
 // move tool mesh animation space, update client
 function toolMove(pos) {
-    toolUpdateMsg = { mesh_move: { id: toolID, pos: { x: pos.x, y: pos.y, z: pos.z } } };
+    toolUpdateMsg = { mesh_move: { id: toolID, pos: { x: pos.x, y: pos.y, z: pos.z }, speed: pos.sp } };
     if (toolMesh.mesh) {
         toolMesh.mesh.delete();
     }
