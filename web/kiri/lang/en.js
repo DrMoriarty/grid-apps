@@ -604,6 +604,8 @@ self.lang['en-us'] = {
     cf_liny_l:      "linear x-axis finishing",
     cf_clip_s:      "clip to stock",
     cf_clip_l:      ["contour op only","clip cutting paths","to defined stock"],
+    cf_skvoid_s:    "skip voids",
+    cf_skvoid_l:    ["end cutting segments over areas already cleared by previous ops","requires a prior rough or area-clear op with the same stock"],
     cf_aste_s:      "angle step",
     cf_aste_l:      ["degrees between radial secant passes. the arc stepover between adjacent rays grows with radius (inherent to radial finishing)"],
 

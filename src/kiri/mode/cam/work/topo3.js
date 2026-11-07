@@ -115,6 +115,34 @@ export class Topo {
         const angleStep = (contour.astep > 0.01 && contour.astep <= 90)
             ? contour.astep : 2.5;
 
+        // stock removal model snapshot for void skipping (cross_*_sync):
+        // when the op enables it and a valid stock model was recorded by
+        // prior rough/area-clear ops, polylines are broken where the probe
+        // falls to the heightmap floor over already-removed material
+        // (holes, cleared pockets) instead of clamping to the floor and
+        // "ironing" air. missing/invalid model (rotary ops, no prior
+        // removal) keeps the model-less behavior untouched. the descriptor
+        // carries the stock model's own grid geometry: its resolution may
+        // differ from the topo raster resolution. data is a SharedArrayBuffer
+        // Float32Array and survives both the sync path and the trace_init
+        // codec broadcast to minion workers.
+        let stockMap;
+        if (contour.skipvoids !== false) {
+            const sm = state.stockModel;
+            if (sm && sm.valid && sm.data) {
+                stockMap = {
+                    data: sm.data,
+                    stepsX: sm.stepsX,
+                    stepsY: sm.stepsY,
+                    minX: sm.minX,
+                    minY: sm.minY,
+                    resolution: sm.resolution,
+                    stockTop: sm.stockTop,
+                    stockBottom: sm.stockBottom
+                };
+            }
+        }
+
         if (tolerance === 0 && !topoCache) {
             console.log(widget.id, 'topo auto tolerance', resolution.round(4));
         }
@@ -442,7 +470,9 @@ export class Topo {
             clipTabZ: clipTab ? clipTab.map(t => t.z) : undefined,
             tabHeight,
             newslices,
-            leave
+            leave,
+            zMin,
+            stock: stockMap
         }, (i, l, p) => {
             onupdate(l / 2 + i / 2, l, p);
         });
@@ -571,6 +601,7 @@ export class Topo {
         const { gridDelta, resolution, density, partOff, toolStep, contourX, contourY, contourM, contourR } = params;
         const { clipTo, clipTab, clipTabZ, tabHeight, newslices, leave } = params;
         const { center, rInner, rMax, angleStep } = params;
+        const { zMin, stock: stockMap } = params;
 
         let stepsTaken = 0,
             stepsTotal = 0;
@@ -621,7 +652,11 @@ export class Topo {
             stepsX,
             stepsY,
             gridDelta,
-            toolStep
+            toolStep,
+            // heightmap floor + stock removal snapshot: used by
+            // crossX/Y/R_sync to break polylines over removed material
+            zMin,
+            stock: stockMap
         });
 
         let resolver;
@@ -916,6 +951,43 @@ export class Probe {
 
 }
 
+// --- stock model void testing (see StockModel in work/stock.js) ---
+// operates on a plain descriptor of the StockModel (data + grid geometry)
+// so it works both on the main worker and inside minion workers where only
+// the trace_init broadcast payload is available.
+
+/** remaining material surface z at world (x,y): bilinear over stock nodes */
+function stockTopAt(stock, x, y) {
+    const { data, stepsX, stepsY, minX, minY, resolution, stockTop } = stock;
+    const tx = (x - minX) / resolution,
+        ty = (y - minY) / resolution,
+        xl = stepsX - 1,
+        yl = stepsY - 1;
+    if (tx < 0 || tx > xl || ty < 0 || ty > yl) {
+        return stockTop;
+    }
+    const x0 = Math.floor(tx),
+        y0 = Math.floor(ty),
+        x1 = Math.min(x0 + 1, xl),
+        y1 = Math.min(y0 + 1, yl),
+        fx = tx - x0,
+        fy = ty - y0,
+        v00 = data[x0 * stepsY + y0],
+        v10 = data[x1 * stepsY + y0],
+        v01 = data[x0 * stepsY + y1],
+        v11 = data[x1 * stepsY + y1];
+    return (v00 * (1 - fx) + v10 * fx) * (1 - fy)
+         + (v01 * (1 - fx) + v11 * fx) * fy;
+}
+
+/** does material remain at world (x,y,z)? mirrors StockModel.hasMaterial */
+function stockHasMaterial(stock, x, y, z) {
+    if (z >= stockTopAt(stock, x, y)) {
+        return false;
+    }
+    return stock.stockBottom === undefined || z >= stock.stockBottom;
+}
+
 export class Trace {
 
     constructor(probe, params) {
@@ -1091,7 +1163,7 @@ export class Trace {
 
     crossY_sync(params, then) {
         const { push_point, end_poly, newtrace, newslice, inClip } = this.object;
-        const { clipTab, tabHeight, clipTo, box, resolution, density, leave } = this.cross;
+        const { clipTab, tabHeight, clipTo, box, resolution, density, leave, zMin, stock } = this.cross;
         const { toolAtZ } = this.probe;
 
         let { from, to, x, gridx, gridy } = params;
@@ -1121,6 +1193,18 @@ export class Trace {
                 gridy += density;
                 continue;
             }
+            // over a void (hole / cleared pocket): the probe fell to the
+            // heightmap floor because no part terrain exists there, and
+            // the stock model confirms the material was already removed
+            // by a prior op. end the segment instead of clamping to the
+            // floor and ironing air. the floor test (tv at zMin) keeps
+            // legitimate bed-level passes outside the part footprint
+            // intact when material still remains there
+            if (stock && tv <= zMin + 0.0001 && !stockHasMaterial(stock, x, y, tv)) {
+                end_poly();
+                gridy += density;
+                continue;
+            }
             push_point(x, y, tv + leave);
             gridy += density;
         }
@@ -1130,7 +1214,7 @@ export class Trace {
 
     crossX_sync(params, then) {
         const { push_point, end_poly, newtrace, newslice, inClip } = this.object;
-        const { clipTab, tabHeight, clipTo, box, resolution, density, leave } = this.cross;
+        const { clipTab, tabHeight, clipTo, box, resolution, density, leave, zMin, stock } = this.cross;
         const { toolAtZ } = this.probe;
         let { from, to, y, gridx, gridy } = params;
 
@@ -1155,6 +1239,12 @@ export class Trace {
             // if the value is on the floor and inside the clip
             // poly (usually shadow), end the segment
             if (clipTo && !inClip(clipTo, undefined, checkr)) {
+                end_poly();
+                gridx += density;
+                continue;
+            }
+            // over a void (hole / cleared pocket): see crossY_sync
+            if (stock && tv <= zMin + 0.0001 && !stockHasMaterial(stock, x, y, tv)) {
                 end_poly();
                 gridx += density;
                 continue;
@@ -1324,7 +1414,7 @@ export class Trace {
     crossR_sync(params, then) {
         const { push_point, end_poly, newtrace, newslice, inClip } = this.object;
         const { clipTab, tabHeight, clipTo, box, resolution, density, leave } = this.cross;
-        const { minX, minY } = this.cross;
+        const { minX, minY, zMin, stock } = this.cross;
         const { toolAtZf } = this.probe;
 
         let { cx, cy, cos, sin, from, to } = params;
@@ -1358,6 +1448,11 @@ export class Trace {
             // if the value is on the floor and inside the clip
             // poly (usually shadow), end the segment
             if (clipTo && !inClip(clipTo, undefined, checkr)) {
+                end_poly();
+                continue;
+            }
+            // over a void (hole / cleared pocket): see crossY_sync
+            if (stock && tv <= zMin + 0.0001 && !stockHasMaterial(stock, x, y, tv)) {
                 end_poly();
                 continue;
             }
