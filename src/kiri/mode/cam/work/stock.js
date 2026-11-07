@@ -321,8 +321,8 @@ export class StockModel {
      * a surface exactly at tip z removes nothing when re-cut.
      *
      * Nothing here depends on which operations produced the sweeps, so
-     * this generalizes the intra-op roughClearMask (op-rough.js) to any
-     * sequence of prior area-clearing ops recorded in the model.
+     * this generalizes intra-op rough-clear masking to any sequence of
+     * prior area-clearing ops recorded in the model.
      *
      * @param {Polygon[]} polys region of interest (2D x/y polygons)
      * @param {number} z world z of the effective tool tip (cut plane + leave_z)

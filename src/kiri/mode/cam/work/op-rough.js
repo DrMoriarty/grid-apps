@@ -1,11 +1,10 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { CamOp } from '../core/op.js';
-import { OpArea, omitMatching } from './op-area.js';
+import { OpArea } from './op-area.js';
 import { recordAreaSweep } from './stock.js';
 import { newPolygon } from '../../../../geo/polygon.js';
 import { polygons as POLY } from '../../../../geo/polygons.js';
-import { util as base_util } from '../../../../geo/base.js';
 
 class OpRough extends CamOp {
     constructor(state, op) {
@@ -31,9 +30,6 @@ class OpRough extends CamOp {
 
         let areas = POLY.flatten(POLY.expand(shadowBase, tool.fluteDiameter() / 2 - 0.001));
         let ops_list = this.ops_list = [ ];
-
-        // area polys of the main roughing pass, re-used for flats masking
-        this.rough_areas = areas;
 
         ops_list.push(new OpArea(state, {
             rename: op.rename ?? "rough",
@@ -66,9 +62,6 @@ class OpRough extends CamOp {
         if (op.flats) {
             let slicer = newSlicer({ zflatup: true });
             let flats = Object.keys(slicer.zFlat).map(v => parseFloat(v)).sort((a,b) => b-a);
-            // regions already cleared by the main roughing pass, per flat plane,
-            // so the flats pass doesn't raster (and mill air) over them
-            let flat_mask = await this.roughClearMask(flats);
             ops_list.push(new OpArea(state, {
                 rename: op.rename ?? "flats",
                 spindle: op.spindle,
@@ -83,7 +76,14 @@ class OpRough extends CamOp {
                 smooth: 0,
                 outline: true,
                 omitthru: op.omitthru,
-                skipclear: op.skipclear !== false,
+                // the flats pass is a clean finish pass over the roughed
+                // stock: the stock removal model does not represent the
+                // roughed state (it treats roughed material as air), and
+                // masking by main-pass layers suppresses flats that coincide
+                // with a roughing layer — so no skipclear and no flat_mask.
+                // empty planes are still skipped via the flats check in
+                // OpArea's clear mode
+                skipclear: false,
                 leave_xy: op.leave,
                 leave_z: op.leavez,
                 ov_botz: op.ov_botz,
@@ -92,8 +92,7 @@ class OpRough extends CamOp {
                 areas: { [widget.id]: areas.map(p => p.toArray()) },
                 surfaces: {},
                 flats,
-                flatOff: 0.01,
-                flat_mask
+                flatOff: 0.01
             }));
         }
 
@@ -147,65 +146,6 @@ class OpRough extends CamOp {
      */
     recordStockSweep(area) {
         recordAreaSweep(this.state, 'rough', area.op, area);
-    }
-
-    /**
-     * For each flat plane, compute the region already cleared by the main
-     * roughing pass, so the flats pass can skip rastering through air.
-     *
-     * Both passes cut with the same tool and the same `area - shadow`
-     * geometry, and both raise their paths by the same leavez, so material
-     * at a flat's cut plane (f + flatOff) is already gone wherever the
-     * first roughing layer at or below that plane swept. Roughing clears
-     * `area - shadow(z+0.01)` at each descending layer and those cleared
-     * regions nest (shadow grows downward), so the first qualifying
-     * layer's clip covers everything cleared at or below it. The clip is
-     * inset by the tool radius (+ leave) to match where the roughing tool
-     * centerlines actually swept, leaving near-wall cleanup to the flats
-     * pass as before.
-     *
-     * @returns {Object} map of flat cut plane (f + flatOff) to cleared Polygon[]
-     */
-    async roughClearMask(flats) {
-        let { op, state } = this;
-        let { shadowAt, stock, tool, workarea } = state;
-        let leave = op.leave ?? 0;
-        let flatOff = 0.01;
-        let toolDiam = tool.fluteDiameter();
-        // roughing layer planes (mirrors OpArea clear mode lerp)
-        let zs = base_util.lerp(workarea.top_z, workarea.bottom_z, op.down);
-        // roughing area polys (same as the main pass)
-        let areas = this.rough_areas;
-        let mask = {};
-        for (let f of flats) {
-            // first roughing layer at or below the flats cut plane
-            let zr = zs.find(z => z <= f + flatOff);
-            if (zr === undefined) {
-                continue;
-            }
-            let shadow = await shadowAt(zr + 0.01);
-            if (op.omitthru) {
-                shadow = omitMatching(shadow, state.shadow.holes);
-            }
-            // clip of the main roughing pass at that layer
-            let clip = [];
-            POLY.subtract(areas, shadow, clip, undefined, undefined, 0);
-            if (!clip.length) {
-                continue;
-            }
-            // inset to where roughing tool centerlines swept
-            let swept = POLY.offset(clip, -(toolDiam / 2 + leave), {
-                count: 1,
-                z: f + flatOff,
-                clean: true,
-                simple: false,
-                minArea: 0.01
-            });
-            if (swept.length) {
-                mask[f + flatOff] = swept;
-            }
-        }
-        return mask;
     }
 
     async prepare(ops, progress) {

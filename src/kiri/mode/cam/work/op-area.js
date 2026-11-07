@@ -208,20 +208,10 @@ class OpArea extends CamOp {
                     } else {
                         POLY.subtract([ area ], shadow, clip, undefined, undefined, 0);
                     }
-                    // remove regions already cleared by a prior roughing pass
-                    // (rough "flats" mode) so we don't raster through air
-                    if (op.flat_mask) {
-                        let cleared = op.flat_mask[z] ?? [];
-                        if (cleared.length) {
-                            let reduced = [];
-                            POLY.subtract(clip, cleared, reduced, undefined, undefined, 0);
-                            clip = reduced;
-                        }
-                    }
                     // remove regions prior operations already cleared down to
                     // (or below) this layer's cut plane, per the stock removal
                     // model (StockModel.clearedRegion, work/stock.js). this
-                    // generalizes the intra-op flat_mask above to the
+                    // generalizes the intra-op rough-clear masking to the
                     // inter-op level: rough → pocket → rough sequences don't
                     // re-mill air over material a previous op removed. the
                     // region only counts as cleared when remaining material
@@ -236,7 +226,7 @@ class OpArea extends CamOp {
                             clip = reduced;
                         }
                     }
-                    if (!clip.length && (op.flat_mask || op.skipclear)) {
+                    if (!clip.length && (flats || op.skipclear)) {
                         // plane fully cleared by roughing or prior passes:
                         // skip to the next
                         zroc += zinc;
@@ -307,7 +297,7 @@ class OpArea extends CamOp {
                     }
                     // if we see no offsets, re-check the mesh bottom Z then exit
                     if (outs.length === 0) {
-                        if (op.flat_mask) {
+                        if (flats) {
                             // flats pass: nothing left to cut at this plane,
                             // move on to the next instead of terminating
                             zroc += zinc;
