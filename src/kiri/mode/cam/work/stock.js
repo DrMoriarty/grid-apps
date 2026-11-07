@@ -325,7 +325,12 @@ export class StockModel {
      * prior area-clearing ops recorded in the model.
      *
      * @param {Polygon[]} polys region of interest (2D x/y polygons)
-     * @param {number} z world z of the effective tool tip (cut plane + leave_z)
+     * @param {number} z world z of the effective tool tip. Ops that respect
+     * leave stock pass the raised tip (cut plane + leave_z), so the leave
+     * skin is never masked as cleared. Flats passes pass the bare cut plane
+     * (no leave_z, and strictly below the stock top): their job is to shave
+     * the leave_z skin off flat planes, so that skin must not count as
+     * already cleared
      * @returns {Polygon[]} cleared strip rectangles (possibly empty)
      */
     clearedRegion(polys, z) {

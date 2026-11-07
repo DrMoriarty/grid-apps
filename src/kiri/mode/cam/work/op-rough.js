@@ -76,14 +76,15 @@ class OpRough extends CamOp {
                 smooth: 0,
                 outline: true,
                 omitthru: op.omitthru,
-                // the flats pass is a clean finish pass over the roughed
-                // stock: the stock removal model does not represent the
-                // roughed state (it treats roughed material as air), and
-                // masking by main-pass layers suppresses flats that coincide
-                // with a roughing layer — so no skipclear and no flat_mask.
-                // empty planes are still skipped via the flats check in
-                // OpArea's clear mode
-                skipclear: false,
+                // skipclear now works for flats: OpArea lowers the cleared
+                // threshold to the bare cut plane (no leave_z) and strictly
+                // below the stock top, so the leave_z skin flats exist to
+                // shave is never classified as "already cleared" and virgin
+                // cells at the stock top stay cuttable — only truly open
+                // air (fully roughed regions) gets masked. flat_mask is
+                // still gone (see #29d0debd history): the stock model's
+                // per-cell clearedRegion is strictly more expressive
+                skipclear: op.skipclear !== false,
                 leave_xy: op.leave,
                 leave_z: op.leavez,
                 ov_botz: op.ov_botz,

@@ -223,7 +223,18 @@ class OpArea extends CamOp {
                         // the tip plane paths actually cut at is z - zMov, so
                         // the "already cleared" threshold must be raised from
                         // the real tip, not the flatOff-shifted value
-                        let tipz = z - zMov + (op.leave_z ?? 0);
+                        // flats omit leave_z: their job is to shave the
+                        // leave_z skin off flat planes, so "cleared" means
+                        // remaining material at or below the bare cut plane.
+                        // at a plane level with the stock top, lower the
+                        // threshold strictly below it: virgin cells (never
+                        // touched by roughing, heightmap == stock top) must
+                        // not count as cleared, or facing the raw stock top
+                        // would be skipped
+                        let f = z - zMov;
+                        let tipz = flats ?
+                            (f >= zTop - ts_eps ? f - ts_eps : f) :
+                            f + (op.leave_z ?? 0);
                         let cleared = state.stockModel.clearedRegion(clip, tipz);
                         if (cleared.length) {
                             let reduced = [];
