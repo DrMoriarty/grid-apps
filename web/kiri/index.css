@@ -372,6 +372,9 @@ details[open] summary::after {
     #layer-animate input {
         border: 1px solid #444;
     }
+    #layer-animate .anim-speed input {
+        border: none;
+    }
 }
 
 /* top menu bar, drop menus */
@@ -2078,6 +2081,25 @@ details[open] summary::after {
 }
 #layer-animate input {
     border-radius: 4px;
+}
+#layer-animate .anim-speed {
+    display: inline-flex;
+    align-items: center;
+}
+#layer-animate .anim-speed label {
+    padding: 2px 4px;
+    margin: 1px 0 2px 1px;
+    cursor: pointer;
+    font-weight: normal;
+}
+#layer-animate .anim-speed input {
+    margin: 0 3px 0 0;
+    accent-color: var(--main-color);
+}
+#layer-animate .anim-speed label:has(input:checked) {
+    border-color: var(--main-color);
+    background-color: var(--main-color);
+    color: #fff;
 }
 
 #layer-slider {

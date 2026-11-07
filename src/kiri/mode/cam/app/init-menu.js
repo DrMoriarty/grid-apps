@@ -34,6 +34,28 @@ const hideable = true;
 const bottom = true;
 const top = true;
 
+// animation speed multipliers shown as a radio group in the animation bar
+const animSpeedNames = ["1x", "2x", "4x", "8x", "!!"];
+
+function newSpeedRadios(anim) {
+    const box = document.createElement('div');
+    box.setAttribute('class', 'anim-speed padleft');
+    anim.radios = animSpeedNames.map((name, index) => {
+        const label = document.createElement('label');
+        label.setAttribute('class', 'anim-rate noselect');
+        label.setAttribute('title', `animation speed ${name}`);
+        const radio = document.createElement('input');
+        radio.setAttribute('type', 'radio');
+        radio.setAttribute('name', 'anim-speed');
+        radio.value = index;
+        label.appendChild(radio);
+        label.appendChild(document.createTextNode(name));
+        box.appendChild(label);
+        return radio;
+    });
+    return box;
+}
+
 function selector(type, { input, event, opt }) {
     let which = opt?.top ? 'top' : opt?.bottom ? 'bottom' : 'unknown';
     let value = parseFloat(input.value);
@@ -98,8 +120,9 @@ export function menu() {
             anim.play     = newButton(null,"anim.play",{icon:'<i class="fas fa-play"></i>',title:"play"}),
             anim.pause    = newButton(null,"anim.pause",{icon:'<i class="fas fa-pause"></i>',title:"pause"}),
             anim.step     = newButton(null,"anim.step",{icon:'<i class="fas fa-step-forward"></i>',title:"single step"}),
-            anim.speed    = newButton(null,"anim.fast",{icon:'<i class="fas fa-forward"></i>',title:"toggle speed"}),
-            anim.labspd   = newValue(3, {class:"center padleft"}),
+            anim.radiosbox = newSpeedRadios(anim),
+            anim.labf     = newLabel("F", {class:"padleft"}),
+            anim.valf     = newValue(6, {class:"center"}),
             anim.labx     = newLabel("X", {class:"padleft"}),
             anim.valx     = newValue(7, {class:"center"}),
             anim.laby     = newLabel("Y", {class:"padleft"}),

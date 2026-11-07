@@ -205,20 +205,21 @@ function renderPath(send) {
         const st = Math.max(1, Math.ceil(md / rezstep));
         const sl = dist / st;
         const mx = dx / st, my = dy / st, mz = dz / st;
+        const sp = next.speed;
         const moves = [];
         for (let i=0, x=lp.x, y=lp.y, z=lp.z; i<st; i++) {
-            moves.push({x,y,z});
+            moves.push({x,y,z,sp});
             x += mx;
             y += my;
             z += mz;
         }
-        moves.push(next.point);
+        moves.push({ ...next.point, sp });
         renderMoves(id, moves, sl, send);
     } else {
         last = next;
         if (tool) {
             tool.pos = next.point;
-            toolUpdate = { mesh_move: { id, pos: next.point }};
+            toolUpdate = { mesh_move: { id, pos: next.point, speed: next.speed }};
         }
         renderPath(send);
     }
@@ -232,7 +233,7 @@ function renderMoves(id, moves, seglen, send, seed = 0) {
         }
         tool.pos = pos;
         deformMesh(pos, send);
-        toolUpdate = { mesh_move: { id, pos }};
+        toolUpdate = { mesh_move: { id, pos, speed: pos.sp }};
         // accumulate travel distance per substep and
         // pause renderer at specified offsets
         renderDist += seglen;
