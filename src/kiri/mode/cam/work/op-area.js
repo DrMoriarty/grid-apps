@@ -219,7 +219,12 @@ class OpArea extends CamOp {
                     // leave_z), so leave stock is respected. missing or
                     // invalid model (rotary work) falls through untouched
                     if (op.skipclear && state.stockModel?.valid) {
-                        let cleared = state.stockModel.clearedRegion(clip, z + (op.leave_z ?? 0));
+                        // z includes flatOff for flats passes (v + zMov above);
+                        // the tip plane paths actually cut at is z - zMov, so
+                        // the "already cleared" threshold must be raised from
+                        // the real tip, not the flatOff-shifted value
+                        let tipz = z - zMov + (op.leave_z ?? 0);
+                        let cleared = state.stockModel.clearedRegion(clip, tipz);
                         if (cleared.length) {
                             let reduced = [];
                             POLY.subtract(clip, cleared, reduced, undefined, undefined, 0);
