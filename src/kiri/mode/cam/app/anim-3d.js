@@ -277,7 +277,7 @@ function step() {
     client.animate2({ speed, steps: 1 }, handleUpdate);
 }
 
-function play(opts) {
+function play(opts = {}) {
     const { steps } = opts;
     updateSpeed();
     if (steps !== 1) {

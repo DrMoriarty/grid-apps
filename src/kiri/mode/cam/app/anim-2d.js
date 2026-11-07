@@ -192,7 +192,7 @@ function step() {
     client.animate({speed, steps: 1}, handleGridUpdate);
 }
 
-function play(opts) {
+function play(opts = {}) {
     const { steps } = opts;
     updateSpeed();
     if (steps !== 1) {
