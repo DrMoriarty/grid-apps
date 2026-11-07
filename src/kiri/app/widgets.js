@@ -40,6 +40,34 @@ function rename(sel) {
     });
 }
 
+// remap tab records/boxes from old to new local bounds so tabs keep
+// their relative position on the part surface. both bounds are taken
+// in the widget's current (post-flip) local frame, so accumulated
+// flips are inherently accounted for
+function remapTabs(w, obb, nbb) {
+    let tabs = w.anno.tab || [];
+    if (!tabs.length) {
+        return;
+    }
+    const mapv = (v, omin, osz, nmin, nsz) =>
+        (osz > 0 ? nmin + (v - omin) * (nsz / osz) : nmin);
+    for (let rec of tabs) {
+        let p = rec.pos;
+        let np = {
+            x: mapv(p.x, obb.min.x, obb.max.x - obb.min.x, nbb.min.x, nbb.max.x - nbb.min.x),
+            y: mapv(p.y, obb.min.y, obb.max.y - obb.min.y, nbb.min.y, nbb.max.y - nbb.min.y),
+            z: mapv(p.z, obb.min.z, obb.max.z - obb.min.z, nbb.min.z, nbb.max.z - nbb.min.z)
+        };
+        let box = w.tabs[rec.id]?.box;
+        p.x = np.x;
+        p.y = np.y;
+        p.z = np.z;
+        if (box) {
+            box.position.set(np.x, np.y, np.z);
+        }
+    }
+}
+
 function replace(vertices, sel) {
     let widgets = sel ? [sel] : api.selection.widgets(true);
     if (!widgets.length) {
@@ -50,12 +78,37 @@ function replace(vertices, sel) {
             let track = Object.clone(w.track);
             let { scale, rot, pos } = track;
             let roto = w.roto.slice();
+            // capture old local bounds for tab remapping
+            let obb = w.mesh.getBoundingBox(true).clone();
             w.loadVertices(vertices);
             for (let m of roto) {
                 w.mesh.geometry.applyMatrix4(m.clone());
             }
             w._scale(scale.x, scale.y, scale.z);
+            // re-center new geometry like the normal import path
+            // (bottom-center on origin) which also refreshes track.box
+            w.bounds = null;
+            w.center(false);
+            w.setModified('replace');
+            w.points = null;
+            // keep tabs attached to the new geometry extents
+            remapTabs(w, obb, w.mesh.getBoundingBox(true));
         }
+        // invalidate cached CAM areas/drills since geometry changed
+        let settings = api.conf.get();
+        if (settings.mode === 'CAM') {
+            for (let op of [...(settings.process.ops || []), ...(settings.process.op2 || [])]) {
+                if (op.type === 'trace') {
+                    op.areas = {};
+                } else if (op.type === 'drill') {
+                    op.drills = {};
+                }
+            }
+            api.client.clear();
+        }
+        // recalc platform bounds, stock and CAM top/anchor positioning
+        // (update_top_z) like the import path does via platform.add()
+        api.platform.update_bounds();
         api.platform.update();
     }
     if (vertices) {
