@@ -335,26 +335,40 @@ class OpArea extends CamOp {
                             // clip yields nothing. re-generate the raster over
                             // the full (un-cleared) clip — paths then cross the
                             // cleared air — and trim the segments passing over
-                            // pure air: `cleared` eroded by the tool radius
-                            // marks where the tool disk touches no material at
-                            // all. segments over (or within a radius of)
-                            // material survive, which is what lets the tool
-                            // reach and shave a narrow ledge
+                            // pure air: the full clip minus the remaining
+                            // material dilated by the tool radius marks where
+                            // the tool disk touches no material at all.
+                            // segments over (or within a radius of) material
+                            // survive, which is what lets the tool reach and
+                            // shave a narrow ledge
                             let gen = genOuts(clipFull);
                             if (gen.outs.length) {
-                                let eroded = POLY.offset(cleared, [ -(toolDiam / 2 + ts_eps) ], { z: z - zMov, ...offopt });
-                                let trimmed = [];
-                                if (eroded.length) {
-                                    for (let out of gen.outs) {
-                                        let cutp = out.cut(eroded);
-                                        if (cutp) trimmed.push(...cutp);
-                                        else trimmed.push(out);
-                                    }
+                                // trim mask is built from the material side,
+                                // not the air side. `cleared` comes back from
+                                // clearedRegion as one-cell-tall strip rects
+                                // which POLY.offset erodes to nothing (each
+                                // thin rect collapses individually), so the
+                                // air-trim would become a no-op. instead
+                                // dilate the remaining material (the reduced
+                                // clip) by the tool radius (+ ts_eps to cover
+                                // heightmap grid quantization): the dilation
+                                // marks where the tool disk still touches
+                                // material. dilating cannot collapse thin
+                                // regions, so the mask below is always sound
+                                let useful = POLY.offset(clip, [ toolDiam / 2 + ts_eps ], { z: z - zMov, ...offopt });
+                                let mask = [];
+                                if (useful.length) {
+                                    POLY.subtract(clipFull, useful, mask, undefined, undefined, 0);
                                 } else {
-                                    // cleared region is thinner than the tool
-                                    // radius: the full raster is all reachable
-                                    // material, keep it untrimmed
-                                    trimmed = gen.outs;
+                                    // dilation failed: nothing is reachable,
+                                    // the entire full raster is pure air
+                                    mask = clipFull;
+                                }
+                                let trimmed = [];
+                                for (let out of gen.outs) {
+                                    let cutp = mask.length ? out.cut(mask) : null;
+                                    if (cutp) trimmed.push(...cutp);
+                                    else trimmed.push(out);
                                 }
                                 if (trimmed.length) {
                                     outs = trimmed;
