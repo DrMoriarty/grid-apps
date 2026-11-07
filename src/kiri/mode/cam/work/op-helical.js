@@ -2,6 +2,7 @@ import { arcToPath } from "../../../../geo/paths.js";
 import { newPolygon } from "../../../../geo/polygon.js";
 import { CamOp } from "../core/op.js";
 import { Tool } from "../core/tool.js";
+import { recordAreaSweep } from "./stock.js";
 import { cylinder_poly_find } from "./slice.js";
 import { newPoint } from "../../../../geo/point.js";
 import { newSlice } from "../../../core/slice.js";
@@ -236,6 +237,21 @@ export class OpHelical extends CamOp {
 
         addSlices(slice);
         sliceOut.push(slice);
+
+        // record the helical sweep into the stock removal model. helix
+        // points already carry their z (the spiral descent), so the shared
+        // profile convolution covers the hole walls as the tool descends;
+        // the entry move and bottom finish circle fold in the same way,
+        // and points at/above the stock top are dropped by its z filter
+        recordAreaSweep(state, 'helical', {
+            tool: op.tool,
+            mode: 'helical',
+            rename: op.rename ?? 'helical',
+            thru: op.thru,
+            down: op.down,
+            entry: op.entry,
+            finish: op.finish
+        }, polys);
     }
 
     async prepare(ops, progress) {
