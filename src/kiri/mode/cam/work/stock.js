@@ -87,8 +87,9 @@ export class StockModel {
 
         /**
          * sweep journal: raw records for future visualizations (Phase 3).
-         * each record: { seq, type, rename, tool, profile, camLines,
-         *                down, leave, leave_z, ov_topz, ov_botz, valid }
+         * each record: { seq, type, mode, rename, thru, tool, profile,
+         *                camLines, down, leave, leave_z, ov_topz, ov_botz,
+         *                valid }
          * @type {Array<Object>}
          */
         this.swaps = [];
@@ -112,7 +113,9 @@ export class StockModel {
      *
      * @param {Object} rec sweep descriptor:
      *   type     {string} op type ("rough", "outline", "index", ...)
+     *   mode     {string} op sub-mode ("clear", "trace", ...) (optional)
      *   rename   {string} op rename / layer name (optional)
+     *   thru     {boolean} trace passes through stock bottom (optional)
      *   tool     {Tool}   op tool (optional if profile given)
      *   profile  {Float32Array} raster tool profile from
      *            Tool.generateProfile(this.resolution).profile
@@ -124,7 +127,9 @@ export class StockModel {
         const entry = {
             seq: this.swaps.length,
             type: rec.type,
+            mode: rec.mode,
             rename: rec.rename,
+            thru: rec.thru,
             tool: rec.tool,
             profile: rec.profile ?? rec.tool?.profile,
             camLines: rec.camLines,
