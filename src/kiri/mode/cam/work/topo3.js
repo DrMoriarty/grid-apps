@@ -11,6 +11,15 @@ import { Tool } from '../core/tool.js';
 const RAD2DEG = 180 / Math.PI;
 const DEG2RAD = Math.PI / 180;
 
+// raster-path GPU terrain sentinels. the rasterizer writes EMPTY_CELL for
+// cells where no triangle was hit, and the toolpath collision shader ignores
+// any cell <= EMPTY_CELL + 1. void-marked cells (stock model says material
+// was removed below the heightmap floor) are written well below that cutoff
+// so the shader treats them exactly like empty cells, while the polyline
+// loop in Topo.generate can still tell them apart from naturally empty ones
+const GPU_EMPTY = -1e10;
+const GPU_VOID = -1.1e10;
+
 export class Topo {
     constructor() { }
 
@@ -221,12 +230,52 @@ export class Topo {
                 triangles: vertices,
                 boundsOverride: wbounds
             });
+            // stock-model void marking (GPU parity with the CPU crossX/Y_sync
+            // path): where the part heightmap is empty and the stock model
+            // shows the material already removed by a prior op, the terrain
+            // cell is marked "no material". marked cells are ignored by the
+            // collision shader (they sit below its EMPTY_CELL cutoff, so the
+            // tool output parks at zFloor) and break polylines in the point
+            // loop below, instead of clamping to the floor and ironing air.
+            // missing/invalid stock model (skipvoids off, rotary work, no
+            // prior removal) leaves the terrain untouched
+            if (stockMap) {
+                const tpos = terrain.positions;
+                const twidth = terrain.gridWidth;
+                const theight = terrain.gridHeight;
+                for (let gy = 0; gy < theight; gy++) {
+                    // terrain node position in (possibly XY-swapped) raster
+                    // space; contourY loads swapped-XY vertices, so world
+                    // coordinates are recovered by swapping back
+                    const ry = wbounds.min.y + gy * resolution;
+                    for (let gx = 0; gx < twidth; gx++) {
+                        const idx = gy * twidth + gx;
+                        // only geometry-free cells can become voids: cells
+                        // carrying part terrain keep their surface height
+                        // regardless of the stock state above them
+                        if (tpos[idx] > GPU_EMPTY + 1) {
+                            continue;
+                        }
+                        const rx = wbounds.min.x + gx * resolution;
+                        const wx = contourY ? ry : rx;
+                        const wy = contourY ? rx : ry;
+                        // same criterion as crossX/Y_sync: the probe would
+                        // sit on the heightmap floor (zMin) here and the
+                        // stock model confirms no material remains below
+                        // the level of interest
+                        if (!stockHasMaterial(stockMap, wx, wy, zMin)) {
+                            tpos[idx] = GPU_VOID;
+                        }
+                    }
+                }
+            }
             let { gridWidth, positions } = terrain;
             // generate all scanline points passing tool over terrain
+            let gzFloor = zBottom - 1;
             let output = await gpu.generateToolpaths({
                 xStep,
                 yStep,
-                zFloor: zBottom - 1,
+                zFloor: gzFloor,
                 onProgress(pct) { console.log({ pct }); onupdate(pct/100, 100) }
             });
             gpu.mode = 'tracing';
@@ -269,6 +318,29 @@ export class Topo {
                 for (let p of points) {
                     // detect points where no rays intersect the part (off part)
                     if (inside && positions[p.ty * gridWidth + p.tx] < zBottom - epsilon) {
+                        if (poly.length > 1) {
+                            lines.push(poly);
+                            poly = newPolygon().setOpen();
+                        } else if (poly.length === 1) {
+                            poly = newPolygon().setOpen();
+                        }
+                        lp = undefined;
+                        skip = 0;
+                        continue;
+                    }
+                    // over a void (hole / cleared pocket): the terrain cell
+                    // was marked no-material from the stock model and the
+                    // tool found no contact (output parked at zFloor). this
+                    // mirrors the crossX/Y_sync break criterion — probe on
+                    // the heightmap floor AND stock removed at this point —
+                    // so polylines break over voids in outside mode the same
+                    // way the inside-mode check above breaks them off part.
+                    // the zFloor gate keeps edge cells where the tool still
+                    // touches the void wall (real output z) connected
+                    if (stockMap
+                        && positions[p.ty * gridWidth + p.tx] < GPU_EMPTY
+                        && p.z <= gzFloor + epsilon
+                    ) {
                         if (poly.length > 1) {
                             lines.push(poly);
                             poly = newPolygon().setOpen();
