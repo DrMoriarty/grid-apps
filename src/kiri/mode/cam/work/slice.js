@@ -861,6 +861,29 @@ function cutTabs(tabs, offset) {
             if (poly.finish_ring) {
                 heal.forEach(hp => hp.finish_ring = true);
             }
+            // carry the spiral revolution-0 engage markers through the
+            // rebuild (task #cfca80a4): fragment points are clipper copies
+            // of the source spiral's points, so each is matched back to
+            // its origin by 2D proximity
+            if (poly.points.length && poly.points[0].rev0) {
+                let src = poly.points;
+                heal.forEach(hp => {
+                    for (let p of hp.points) {
+                        let bd = Infinity;
+                        let bp = null;
+                        for (let sp of src) {
+                            let d = sp.distTo2D(p);
+                            if (d < bd) {
+                                bd = d;
+                                bp = sp;
+                            }
+                        }
+                        if (bp && bp.rev0) {
+                            p.rev0 = true;
+                        }
+                    }
+                });
+            }
             out.push(...heal);
         } else {
             out.push(poly);

@@ -1049,6 +1049,15 @@ function stitchRegion(levels, opts) {
     for (let p of res[0]) {
         push(p, p, 0);
     }
+    // flag revolution 0 points for the emitter: the camFullEngage feed
+    // ramp applies only to this first full-engagement pass along the
+    // outermost ring — later revolutions are offset cuts in partially
+    // cleared material and run at full feed (task #cfca80a4). flags
+    // live on the point objects so they survive polygon clones and
+    // winding reversals downstream
+    for (let p of spiral.points) {
+        p.rev0 = true;
+    }
     // revolutions 1..last: ride ring i-1, morph onto ring i. the first
     // transition (ring 0 -> ring 1) morphs across the ENTIRE revolution
     // (`firstBlend`): revolution 0 already gives the outermost ring its

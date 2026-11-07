@@ -689,7 +689,9 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
                 // poly is child if has parent
                 let child = poly.parent;
                 // for depth, collapse parent to 1 or 0 (has, missing)
-                if (depthFirst) { poly = poly.clone(); poly.parent = child ? 1 : 0 }
+                // emitter flags must survive the clone (revolution-0
+                // spiral scoping, finish-ring engage detection)
+                if (depthFirst) { poly = poly.clone(false, [ 'spiral', 'finish_ring' ]); poly.parent = child ? 1 : 0 }
                 // place poly into top or child bucket
                 if (child) c.push(poly); else t.push(poly);
                 polys.push(poly);
@@ -949,8 +951,14 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         let lastOut;
         // engage is strictly boolean: the poly2polyEmit emitter signature
         // passes an emission counter here, which must not enable the ramp
-        let opts = (engage === true || ringEngage) ?
+        let engageOpts = (engage === true || ringEngage) ?
             { feed: feedRate * camFullEngage } : {};
+        // on a stitched spiral, scope the engage feed to revolution 0
+        // (its points are flagged at stitch time, and the flags survive
+        // clones, reversals, arc detection and tab cutting): inner
+        // revolutions are offset cuts in partially cleared material and
+        // run at full feed (task #cfca80a4)
+        let spiralEngage = spiraling && engage === true && !ringEngage;
 
         // arc output must handle shortened arcs from ease-down
         // future support for 3d helical arcs will fix this
@@ -960,6 +968,7 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
             let center;
             let lastP = points.peek();
             for (let point of points) {
+                let opts = (spiralEngage && point.rev0 !== true) ? {} : engageOpts;
                 lastOut = point.clone();
                 if (type) {
                     // terminate arc early (caused by ease eating points)
@@ -979,6 +988,7 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
             }
         } else {
             for (let point of points) {
+                let opts = (spiralEngage && point.rev0 !== true) ? {} : engageOpts;
                 camOut(lastOut = point.clone(), 1, opts);
             }
         }
