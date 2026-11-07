@@ -33,6 +33,9 @@ class OpPocket extends CamOp {
             sr_type: 'offset',
             spiral: op.spiral,
             spiral_finish: op.spiral_finish,
+            // skip regions prior operations already cleared (stock removal
+            // model); defaults on for legacy op records lacking the field
+            skipclear: op.skipclear !== false,
             surfaces,
             tolerance,
             tool,

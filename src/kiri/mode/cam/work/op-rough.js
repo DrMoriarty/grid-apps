@@ -49,6 +49,9 @@ class OpRough extends CamOp {
             smooth: 0,
             outline: true,
             omitthru: op.omitthru,
+            // skip regions prior operations already cleared (stock removal
+            // model); defaults on for legacy op records lacking the field
+            skipclear: op.skipclear !== false,
             leave_xy: op.leave,
             leave_z: op.leavez,
             ov_botz: op.ov_botz,
@@ -80,6 +83,7 @@ class OpRough extends CamOp {
                 smooth: 0,
                 outline: true,
                 omitthru: op.omitthru,
+                skipclear: op.skipclear !== false,
                 leave_xy: op.leave,
                 leave_z: op.leavez,
                 ov_botz: op.ov_botz,

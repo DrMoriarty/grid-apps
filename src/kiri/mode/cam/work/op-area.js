@@ -217,14 +217,33 @@ class OpArea extends CamOp {
                             POLY.subtract(clip, cleared, reduced, undefined, undefined, 0);
                             clip = reduced;
                         }
-                        if (!clip.length) {
-                            // plane fully cleared by roughing: skip to the next
-                            zroc += zinc;
-                            lzo = z;
-                            progress(proc + (pinc * zroc), 'clear');
-                            if (z === zs.peek()) break outer;
-                            continue;
+                    }
+                    // remove regions prior operations already cleared down to
+                    // (or below) this layer's cut plane, per the stock removal
+                    // model (StockModel.clearedRegion, work/stock.js). this
+                    // generalizes the intra-op flat_mask above to the
+                    // inter-op level: rough → pocket → rough sequences don't
+                    // re-mill air over material a previous op removed. the
+                    // region only counts as cleared when remaining material
+                    // sits at or below this op's raised tip (cut plane +
+                    // leave_z), so leave stock is respected. missing or
+                    // invalid model (rotary work) falls through untouched
+                    if (op.skipclear && state.stockModel?.valid) {
+                        let cleared = state.stockModel.clearedRegion(clip, z + (op.leave_z ?? 0));
+                        if (cleared.length) {
+                            let reduced = [];
+                            POLY.subtract(clip, cleared, reduced, undefined, undefined, 0);
+                            clip = reduced;
                         }
+                    }
+                    if (!clip.length && (op.flat_mask || op.skipclear)) {
+                        // plane fully cleared by roughing or prior passes:
+                        // skip to the next
+                        zroc += zinc;
+                        lzo = z;
+                        progress(proc + (pinc * zroc), 'clear');
+                        if (z === zs.peek()) break outer;
+                        continue;
                     }
                     //generate offsets to use
                     let offsets = [ firstOff ];

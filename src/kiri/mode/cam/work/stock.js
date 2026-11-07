@@ -1,6 +1,7 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { Tool } from '../core/tool.js';
+import { newPolygon } from '../../../../geo/polygon.js';
 
 /**
  * CAM stock removal model (Phase 1 skeleton).
@@ -42,6 +43,12 @@ const ROTARY_OPS = new Set(['index', 'lathe']);
 
 // bilinear boundary snap epsilon (fraction of a cell)
 const EPS = 1e-6;
+
+// tolerance for "material top at or below tip z" comparisons in
+// clearedRegion (mm): z values converge on the same plane through
+// different lerp/add paths, so exact equality is unreliable; anything
+// within this margin counts as already swept
+const CLEAR_EPS = 0.001;
 
 export class StockModel {
 
@@ -296,6 +303,83 @@ export class StockModel {
     /** journal length (convenience for consumers / debugging) */
     get swapCount() {
         return this.swaps.length;
+    }
+
+    /**
+     * Build the sub-regions of `polys` where the remaining material top is
+     * at or below `z` — the areas a tool with its tip at z would sweep
+     * through air ("skip cleared" masking between operations).
+     *
+     * The heightmap is a node lattice; a grid cell counts as cleared only
+     * when all four corner nodes are at or below `z` (a cell's bilinear
+     * surface never exceeds its corner max, so this test is conservative:
+     * borderline cells stay cuttable, never skipped). Cleared cells are
+     * run-length merged into horizontal strip rectangles per grid row,
+     * which the caller subtracts from its working region with POLY.subtract.
+     * A small epsilon folds float noise (identical z computed through
+     * different arithmetic paths) into the "already swept" equality case:
+     * a surface exactly at tip z removes nothing when re-cut.
+     *
+     * Nothing here depends on which operations produced the sweeps, so
+     * this generalizes the intra-op roughClearMask (op-rough.js) to any
+     * sequence of prior area-clearing ops recorded in the model.
+     *
+     * @param {Polygon[]} polys region of interest (2D x/y polygons)
+     * @param {number} z world z of the effective tool tip (cut plane + leave_z)
+     * @returns {Polygon[]} cleared strip rectangles (possibly empty)
+     */
+    clearedRegion(polys, z) {
+        const { data, stepsX, stepsY, resolution, minX, minY } = this;
+        const thresh = z + CLEAR_EPS;
+        // cell (gx,gy) spans nodes gx..gx+1 x gy..gy+1; clamp to the lattice
+        const lastCellX = stepsX - 2, lastCellY = stepsY - 2;
+        if (lastCellX < 0 || lastCellY < 0 || !polys.length) {
+            return [];
+        }
+        // region of interest in grid coords, clamped to the cell lattice
+        let cx0 = lastCellX, cy0 = lastCellY, cx1 = -1, cy1 = -1;
+        for (let poly of polys) {
+            let b = poly.bounds;
+            let lx = Math.max(0, Math.floor(this.toGridX(b.minx))),
+                ly = Math.max(0, Math.floor(this.toGridY(b.miny))),
+                hx = Math.min(lastCellX, Math.ceil(this.toGridX(b.maxx)) - 1),
+                hy = Math.min(lastCellY, Math.ceil(this.toGridY(b.maxy)) - 1);
+            if (hx < lx || hy < ly) {
+                continue;
+            }
+            cx0 = Math.min(cx0, lx);
+            cy0 = Math.min(cy0, ly);
+            cx1 = Math.max(cx1, hx);
+            cy1 = Math.max(cy1, hy);
+        }
+        if (cx1 < cx0) {
+            return [];
+        }
+        const strips = [];
+        for (let gy = cy0; gy <= cy1; gy++) {
+            // node rows bracketing this cell row
+            const nA = gy, nB = gy + 1;
+            let run = -1;
+            for (let gx = cx0; gx <= cx1 + 1; gx++) {
+                const clear = gx <= cx1 &&
+                    data[gx * stepsY + nA] <= thresh &&
+                    data[(gx + 1) * stepsY + nA] <= thresh &&
+                    data[gx * stepsY + nB] <= thresh &&
+                    data[(gx + 1) * stepsY + nB] <= thresh;
+                if (clear && run < 0) {
+                    run = gx;
+                } else if (!clear && run >= 0) {
+                    // close the run into one strip rectangle at plane z
+                    strips.push(newPolygon()
+                        .add(minX + run * resolution, minY + gy * resolution, z)
+                        .add(minX + gx * resolution, minY + gy * resolution, z)
+                        .add(minX + gx * resolution, minY + (gy + 1) * resolution, z)
+                        .add(minX + run * resolution, minY + (gy + 1) * resolution, z));
+                    run = -1;
+                }
+            }
+        }
+        return strips;
     }
 }
 

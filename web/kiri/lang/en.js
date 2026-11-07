@@ -579,6 +579,8 @@ self.lang['en-us'] = {
     co_omit_l:      "eliminate thru holes",
     co_omvd_s:      "omit pocket",
     co_omvd_l:      "eliminate interior pockets",
+    co_skcl_s:      "skip cleared",
+    co_skcl_l:      ["skip paths over areas prior operations already cleared"],
     co_olen_s:      "enable",
     co_olen_l:      "enabled outline cutting",
     co_olin_s:      "inside only",
