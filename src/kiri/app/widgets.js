@@ -68,13 +68,14 @@ function remapTabs(w, obb, nbb) {
     }
 }
 
-function replace(vertices, sel) {
+function replace(vertices, sel, filename) {
     let widgets = sel ? [sel] : api.selection.widgets(true);
     if (!widgets.length) {
         return;
     }
-    function onload(vertices) {
-        for (let w of widgets) {
+    function onload(vertices, filename) {
+        for (let i = 0; i < widgets.length; i++) {
+            let w = widgets[i];
             let track = Object.clone(w.track);
             let { scale, rot, pos } = track;
             let roto = w.roto.slice();
@@ -91,6 +92,10 @@ function replace(vertices, sel) {
             w.center(false);
             w.setModified('replace');
             w.points = null;
+            // rename widget to match the file it was replaced with
+            if (filename) {
+                w.meta.file = widgets.length > 1 ? `${filename}_${i + 1}` : filename;
+            }
             // keep tabs attached to the new geometry extents
             remapTabs(w, obb, w.mesh.getBoundingBox(true));
         }
@@ -110,14 +115,20 @@ function replace(vertices, sel) {
         // (update_top_z) like the import path does via platform.add()
         api.platform.update_bounds();
         api.platform.update();
+        if (filename) {
+            // refresh widget cards showing meta.file and persist the rename
+            api.platform.changed();
+            api.space.save(true);
+        }
     }
     if (vertices) {
-        onload(vertices);
+        onload(vertices, filename);
     } else {
         // dialog
         $('load-file').onchange = function(event) {
-            load(event.target.files[0])
-                .then(data => onload(data[0].mesh))
+            let file = event.target.files[0];
+            load(file)
+                .then(data => onload(data[0].mesh, data[0].file || file.name))
                 .catch(error => console.log({error}));
         };
         $('load-file').click();
