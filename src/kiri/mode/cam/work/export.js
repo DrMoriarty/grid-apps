@@ -1,6 +1,7 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { base } from '../../../../geo/base.js';
+import { AccelPlanner } from '../../../core/planner.js';
 import { version } from '../../../../moto/license.js';
 
 const { util } = base;
@@ -38,6 +39,14 @@ export function cam_export(print, online) {
         spro = settings.process,
         maxZd = spro.camFastFeedZ,
         maxXYd = spro.camFastFeed,
+        // look-ahead time planner: models acceleration & junction slowdown
+        // (XYZ only: rotary moves fall back to the feedrate estimate)
+        useAccelTime = device.gcodeAccelTime && device.accel > 0,
+        planner = useAccelTime ? new AccelPlanner({
+            accel: device.accel,
+            travel: device.accelTravel || device.accel,
+            junction: device.junctionDev || 0.05
+        }) : null,
         decimals = base.config.gcode_decimals || 3,
         pos = { x: null, y: null, z: null, a: undefined, f: null, t: null, emit: null },
         line,
@@ -173,6 +182,7 @@ export function cam_export(print, online) {
         // no point == dwell
         // out.speed = time to dwell in ms
         if (!newpos) {
+            planner && planner.barrier(); // motion stops for the dwell
             time += out.speed / 60;
             consts.time_sec = out.speed / 1000;
             consts.time_ms = out.speed;
@@ -188,6 +198,7 @@ export function cam_export(print, online) {
         // on tool change
         let changeTool = !(out.tool && pos.t) || out.tool.getID() !== pos.t.getID();
         if (changeTool) {
+            planner && planner.barrier(); // motion stops for tool change
             pos.t = out.tool;
             consts.tool = pos.t.getNumber();
             consts.tool_name = pos.t.getName();
@@ -355,7 +366,21 @@ export function cam_export(print, online) {
         lasering = laser;
 
         // update time calculation
-        time += opt.time >= 0 ? opt.time : (dist / (pos.f || 1000)) * 60;
+        if (planner) {
+            if (da) {
+                // rotary axis coupling is out of scope for the planner:
+                // fall back to the feedrate estimate with a full stop junction
+                planner.barrier();
+                time += opt.time >= 0 ? opt.time : (dist / (pos.f || 1000)) * 60;
+            } else {
+                planner.queue(dist, feed / 60, gv === 0, dx, dy, dz);
+                if (opt.time >= 0) {
+                    time += opt.time;
+                }
+            }
+        } else {
+            time += opt.time >= 0 ? opt.time : (dist / (pos.f || 1000)) * 60;
+        }
         consts.time = Math.round(time);
         // if (comment && !stripComments) {
         //     nl.append(" ; ").append(comment);
@@ -522,6 +547,11 @@ export function cam_export(print, online) {
 
     // flush buffered gcode
     append();
+
+    // add acceleration-aware motion time for the whole program
+    if (planner) {
+        time += planner.finish() * (device.gcodeTime || 1);
+    }
 
     print.time = time;
     print.lines = lines;

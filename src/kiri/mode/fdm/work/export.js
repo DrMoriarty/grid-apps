@@ -2,6 +2,7 @@
 
 import { base, util } from '../../../../geo/base.js';
 import { getRangeParameters } from '../core/params.js';
+import { AccelPlanner } from '../../../core/planner.js';
 import { FDM } from './init-work.js';
 import { version } from '../../../../moto/license.js';
 
@@ -27,7 +28,14 @@ export function fdm_export(print, online, ondone, ondebug) {
         { exportThumb } = controller,
         { extrudeMM, extrudePerMM } = FDM,
         { outputInvertX, outputInvertY } = process,
-        timeFactor = (device.gcodeTime || 1) * 1.5,
+        useAccelTime = device.gcodeAccelTime && device.accel > 0,
+        timeFactor = (device.gcodeTime || 1) * (useAccelTime ? 1 : 1.5),
+        // look-ahead time planner: models acceleration & junction slowdown
+        planner = useAccelTime ? new AccelPlanner({
+            accel: device.accel,
+            travel: device.accelTravel || device.accel,
+            junction: device.junctionDev || 0.05
+        }) : null,
         decimals = config.gcode_decimals || 4,
         zMoveMax = device.deviceZMax || 0,
         isBelt = bedBelt,
@@ -379,6 +387,7 @@ export function fdm_export(print, online, ondone, ondebug) {
     if (pre === 2) preamble();
 
     function dwell(ms) {
+        planner && planner.barrier(); // motion stops for the dwell
         time += ms/1000;
         // break up dwell times over 4s because of
         // limitations in some firmwares
@@ -398,6 +407,7 @@ export function fdm_export(print, online, ondone, ondebug) {
             return;
         }
         retracted = retDist;
+        planner && planner.barrier(); // motion stops to retract
         if (fwRetract) {
             append('G10');
         } else {
@@ -427,10 +437,12 @@ export function fdm_export(print, online, ondone, ondebug) {
     }
 
     function moveTo(newpos, rate, comment, arc) {
-        let o = arc ? 
+        let o = arc ?
             [arc.clockwise ? 'G2' : 'G3'] :
             [!rate && !newpos.e ? 'G0' : 'G1'];
         let emit = { x: false, y: false, z: false };
+        // remember position before update for planner deltas
+        let fx = pos.x, fy = pos.y, fz = pos.z;
         if (typeof newpos.x === 'number' && newpos.x !== pos.x) {
             pos.x = newpos.x;
             emit.x = true;
@@ -495,6 +507,29 @@ export function fdm_export(print, online, ondone, ondebug) {
             return;
         }
         last = line;
+        // queue motion for the acceleration-aware time planner
+        if (planner) {
+            let dx = pos.x - fx, dy = pos.y - fy, dz = pos.z - fz,
+                mdist;
+            if (arc) {
+                // arc length from center/radius (chord direction for junctions)
+                let cx = arc.center.x, cy = arc.center.y;
+                let r1 = Math.hypot(fx - cx, fy - cy),
+                    r2 = Math.hypot(pos.x - cx, pos.y - cy),
+                    r = (r1 + r2) / 2,
+                    chord = Math.hypot(dx, dy);
+                if (chord > 1e-9 && r > 1e-9) {
+                    mdist = 2 * r * Math.asin(Math.min(1, chord / (2 * r)));
+                } else if (r > 1e-9) {
+                    mdist = 2 * Math.PI * r; // full circle (start == end)
+                } else {
+                    mdist = 0;
+                }
+            } else {
+                mdist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            }
+            planner.queue(mdist, rate / 60, typeof newpos.e !== 'number', dx, dy, dz);
+        }
         subst.pos_x = epos.x.round(decimals);
         subst.pos_y = epos.y.round(decimals);
         subst.pos_z = epos.z.round(decimals);
@@ -730,7 +765,8 @@ export function fdm_export(print, online, ondone, ondebug) {
             }
 
             // update time and distance (should calc in moveTo() instead)
-            if (dist && speedMMM) {
+            // with the planner enabled, motion time comes from the planner
+            if (!planner && dist && speedMMM) {
                 time += (dist / speedMMM) * 60 * timeFactor;
             }
 
@@ -765,6 +801,11 @@ export function fdm_export(print, online, ondone, ondebug) {
 
     if (inloops) {
         append(`M808`);
+    }
+
+    // add acceleration-aware motion time for the whole print
+    if (planner) {
+        time += planner.finish() * (device.gcodeTime || 1);
     }
 
     segments.push({emitted, tool});
