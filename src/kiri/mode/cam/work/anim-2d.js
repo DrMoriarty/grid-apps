@@ -60,7 +60,6 @@ export function init(worker) {
     };
 
     dispatch.animate = function(data, send) {
-        renderPause = data.pause || renderPause;
         renderSpeed = data.speed || 0;
         if (animating) {
             return send.done();
@@ -125,14 +124,15 @@ function createGrid(stepsX, stepsY, size, step, stock) {
 
 let animateClear = false;
 let animating = false;
-let renderDist = 0;
 let renderDone = false;
-let renderPause = 10;
 let renderSteps = 0;
 let renderSpeed = 0;
 let skipMove = null;
 let toolUpdate;
-let depth = 0;
+
+// browsers clamp nested setTimeout to ~4ms, so very high
+// feed rates will bottom out at this pace (acceptable)
+const minPause = 4;
 
 // send latest tool position and progress bar
 function renderUpdate(send) {
@@ -234,19 +234,21 @@ function renderMoves(id, moves, seglen, send, seed = 0) {
         tool.pos = pos;
         deformMesh(pos, send);
         toolUpdate = { mesh_move: { id, pos, speed: pos.sp }};
-        // accumulate travel distance per substep and
-        // pause renderer at specified offsets
-        renderDist += seglen;
-        if ((renderSpeed && renderDist >= renderSpeed) || (depth > 600)) {
-            renderDist = depth = 0;
+        // pause renderer per substep, proportional to feed rate
+        // (sp in units/min, seglen in units) like the 3D animation.
+        // renderSpeed (radio multiplier) acts as a time divisor.
+        // G0 / zero-feed moves use a small fixed fallback
+        if (renderSpeed) {
+            const sp = pos.sp;
+            let time = sp ? (seglen / sp) * 60000 : 10;
+            time = Math.max(time / renderSpeed, minPause);
             renderUpdate(send);
             setTimeout(() => {
                 renderMoves(id, moves, seglen, send, index + 1);
-            }, renderPause);
+            }, time);
             return;
         }
     }
-    depth++;
     renderPath(send);
 }
 
