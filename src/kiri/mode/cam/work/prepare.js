@@ -12,6 +12,10 @@ const debug = false;
 const debug_push = false;
 const CLOSEST_TO_PP = -999;
 
+// upper bound on segment samples when computing a segment-safe travel
+// height (see segmentSafeZ): keeps worst-case long traverses bounded
+const MAX_TRAVEL_SAMPLES = 100;
+
 /**
  * DRIVER PRINT CONTRACT
  *
@@ -389,80 +393,98 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
     }
 
     /**
-     * Local rapid-safe z for a traversal destination (work coordinates in,
-     * work coordinates out). Returns the global safe z (zSafe) unless ALL
-     * of the following hold:
+     * Segment-safe traversal z for an up-and-over rapid (work coordinates
+     * in, work coordinates out). Generalizes the point-based localSafeZ it
+     * replaces: instead of checking only the destination, the remaining
+     * material surface (`stockModel.removedTop`) is sampled along the
+     * ENTIRE travel segment — endpoints included — over the tool's full
+     * footprint (center + 0.5r and 1r rings, same coverage as before), and
+     * the traversal height is the highest remaining surface encountered
+     * plus the clearance gap, capped at the global safe z. Both legs of
+     * the transition (departure rise and destination descent) use this
+     * height, so a rapid crossing over already-cleared stock (through
+     * holes, pockets, prior raster parts) stays just above the remaining
+     * material instead of at the full stock height.
+     *
+     * Returns the global safe z (zSafe) unless ALL of the following hold:
      *
      *  - a valid stock removal model exists (rotary ops invalidate it, and
      *    a missing/invalid model keeps the model-less behavior untouched);
      *  - the destination lies inside the machining area (target z below the
      *    stock top) — op-change retracts and final lifts keep the global
      *    safe height regardless;
-     *  - the model confirms the material at the destination was removed to
-     *    a level *confidently* above the segment's cut z (by at least the
-     *    clearance gap) — when in doubt, the global safe height is used;
-     *  - the remaining surface over the tool's full footprint at the
-     *    destination (center + 0.5r and 1r rings) sits at or below the
-     *    proposed descent level — unswept cells hold the stock top and
-     *    force the fallback, so partial clears (slot walls, pocket
-     *    corners) never see a lowered traversal.
+     *  - the tool has a positive diameter (laser and model-less paths keep
+     *    the global safe height).
      *
-     * When they do, returns min(zSafe, removedTop(dest) + gap) so a rapid
-     * descent over already-cleared stock bottoms out just above the
-     * remaining material instead of at the full clearance height. The
-     * result is never above zSafe: the feature only *narrows* rapid
-     * transitions, it never widens them, and camFastFeedZ / safe-move
-     * semantics elsewhere (setTool, op-change retracts, export maxZd) are
-     * untouched.
+     * No separate confidence test against the segment cut z is needed: the
+     * returned height is by construction at or above the modeled remaining
+     * surface (plus clearance) everywhere the tool footprint sweeps along
+     * the path, and unswept/doubtful cells hold the stock top, which
+     * saturates the zSafe cap and reproduces the old full-height behavior.
+     * Model bias runs safe by construction: missed removal leaves
+     * removedTop at the stock top (no reduction), and the recorded sweep
+     * is a min-merged deepest-engagement envelope, so removedTop
+     * over-estimates (never under-estimates) the true remaining surface
+     * between grid nodes. The vertical legs are covered too: footprint
+     * rings at both endpoints bound the material the tool grazes while
+     * rising out of / dropping into the cut channel it just made/is about
+     * to make.
      *
      * The gap above the modeled remaining material reuses `camZClearance`
      * (default 1mm): the same clearance the user asked for above raw
-     * stock applies above the modeled remaining stock. It doubles as the
-     * confidence margin against the segment z, keeping the default
-     * conservative — a shallower pass at nearly the same z (leave ≈ 0)
-     * does not lower traversals. Model bias runs safe by construction:
-     * missed removal leaves removedTop at the stock top (no reduction),
-     * and the recorded sweep is a min-merged deepest-engagement envelope,
-     * so removedTop over-estimates (never under-estimates) the true
-     * remaining surface between grid nodes.
+     * stock applies above the modeled remaining stock. The result is
+     * never above zSafe: the feature only *narrows* rapid transitions, it
+     * never widens them, and camFastFeedZ / safe-move semantics elsewhere
+     * (setTool, op-change retracts, export maxZd) are untouched.
      *
-     * @param {Point} point destination in work coordinates
-     * @returns {number} safe z for the descent leg in work coordinates
+     * Sampling density scales with segment length: endpoints plus one
+     * sample per tool radius of travel, capped at MAX_TRAVEL_SAMPLES;
+     * ring angles are staggered between adjacent samples so a grid node
+     * slipping between two consecutive rings cannot go unseen.
+     *
+     * @param {Point} from departure point in work coordinates
+     * @param {Point} to destination point in work coordinates
+     * @returns {number} safe z for both legs of the transition
      */
-    function localSafeZ(point) {
+    function segmentSafeZ(from, to) {
         const sm = widget.stockModel;
         if (!sm || !sm.valid || !sm.data) {
             return zSafe;
         }
-        // only traverses inside the machining area are eligible
-        if (point.z >= stockZ) {
-            return zSafe;
-        }
-        const wp = toWidgetCoords(point);
-        const rTop = sm.removedTop(wp.x, wp.y);
-        // remaining surface must sit confidently above the segment z
-        if (rTop < wp.z + camZClearance) {
-            return zSafe;
-        }
-        // proposed descent level (widget frame -> work frame)
-        const local = Math.min(zSafe, rTop + camZClearance + wmz);
-        if (local >= zSafe) {
+        // only traverses into the machining area are eligible
+        if (to.z >= stockZ) {
             return zSafe;
         }
         const r = toolDiam / 2;
         if (!(r > 0)) {
             return zSafe;
         }
-        // footprint check: any material above the descent level within
-        // the tool radius forces the global safe height
-        for (let i = 0; i < 16; i++) {
-            const rad = r * (i < 8 ? 0.5 : 1);
-            const a = (i % 8) * (Math.PI / 4);
-            if (sm.removedTop(wp.x + Math.cos(a) * rad, wp.y + Math.sin(a) * rad) > rTop + camZClearance + 0.0001) {
-                return zSafe;
+        const wFrom = toWidgetCoords(from);
+        const wTo = toWidgetCoords(to);
+        // sample endpoints plus one sample per tool radius of travel
+        const dist = wFrom.distTo2D(wTo);
+        const steps = Math.min(MAX_TRAVEL_SAMPLES, Math.max(1, Math.ceil(dist / r)));
+        let maxTop = -Infinity;
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps,
+                x = wFrom.x + (wTo.x - wFrom.x) * t,
+                y = wFrom.y + (wTo.y - wFrom.y) * t,
+                // stagger ring angles between adjacent samples
+                aoff = (i % 2) * (Math.PI / 8);
+            // footprint: center + 0.5r and 1r rings
+            for (let j = 0; j < 16; j++) {
+                const rad = r * (j < 8 ? 0.5 : 1);
+                const a = (j % 8) * (Math.PI / 4) + aoff;
+                maxTop = Math.max(maxTop, sm.removedTop(x + Math.cos(a) * rad, y + Math.sin(a) * rad));
             }
         }
-        return local;
+        if (maxTop === -Infinity) {
+            return zSafe;
+        }
+        // proposed traversal level (widget frame -> work frame), capped:
+        // unswept cells return the stock top which lands on zSafe here
+        const local = Math.min(zSafe, maxTop + camZClearance + wmz);
+        return local >= zSafe ? zSafe : local;
     }
 
     /**
@@ -703,14 +725,21 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
 
         if (upAndOver) {
             if (debug) console.log('upAndOver', { upAndOver, camForceZMax });
-            // rise to the global safe z at the departure point, then drop
-            // the destination leg to a local safe z when the stock removal
-            // model confirms the area around the destination was already
-            // cleared (see localSafeZ: falls back to zSafe when in doubt).
-            // op-change retracts above keep the global safe height.
-            layerPush(printPoint.clone().setZ(zSafe), 0, 0, tool);
-            const destSafe = localSafeZ(point);
-            layerPush(point.clone().setZ(destSafe), 0, 0, tool);
+            // rise to the segment-safe z at the departure point, then
+            // traverse and drop the destination leg to the same height:
+            // segmentSafeZ samples the stock removal model along the whole
+            // travel and lowers both legs to just above the highest
+            // remaining material on the path, keeping the global safe
+            // height whenever the model is missing/invalid or any section
+            // of the path is unswept. op-change retracts above keep the
+            // global safe height.
+            const segZ = segmentSafeZ(printPoint, point);
+            // departure leg: rising from a cut into the channel the tool
+            // just made is safe below the segment height, but never descend
+            // to the traverse level before traversing
+            const depZ = segZ === zSafe ? zSafe : Math.max(printPoint.z, segZ);
+            layerPush(printPoint.clone().setZ(depZ), 0, 0, tool);
+            layerPush(point.clone().setZ(segZ), 0, 0, tool);
             newLayer();
             // when plunge goes below stock, convert to cut
             if (point.z < stockZ) {
@@ -718,7 +747,7 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
                 // when the descent already bottomed out at or below the
                 // just-above-stock level, skip the intermediate point so
                 // the tool does not back up before plunging
-                if (destSafe === zSafe || destSafe > stockZ + 0.1) {
+                if (segZ === zSafe || segZ > stockZ + 0.1) {
                     layerPush(point.clone().setZ(stockZ + 0.1), 0, 0, tool);
                     newLayer();
                 }
