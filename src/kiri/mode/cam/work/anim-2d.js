@@ -22,6 +22,10 @@ export function init(worker) {
         const density = parseInt(settings.controller.animesh) * 1000;
 
         pathIndex = 0;
+        curMoves = null;
+        curIndex = 0;
+        tickBudget = 0;
+        tickLast = 0;
         path = print.output.flat();
         tools = settings.tools;
         stock = settings.stock;
@@ -127,12 +131,27 @@ let animating = false;
 let renderDone = false;
 let renderSteps = 0;
 let renderSpeed = 0;
-let skipMove = null;
 let toolUpdate;
 
-// browsers clamp nested setTimeout to ~4ms, so very high
-// feed rates will bottom out at this pace (acceptable)
-const minPause = 4;
+// --- tick based render loop state ---
+// The old loop scheduled one setTimeout per substep, which bottoms out
+// against the browser's ~4ms nested timer clamp, making speed radio
+// multipliers above ~x2 indistinguishable. Instead, the loop runs on
+// fixed ticks and converts real elapsed time into "virtual time"
+// (elapsed * renderSpeed). Substeps consume virtual time proportional
+// to feed rate, so any number of substeps may be crossed per tick and
+// multipliers stay proportional at any pace.
+let tickSend = null;     // send channel of the active animation
+let tickLast = 0;        // performance.now() of the previous tick
+let tickBudget = 0;      // unspent virtual ms
+let curMoves = null;     // substeps of the segment in progress
+let curIndex = 0;
+let curSeglen = 0;
+let curID = 0;
+
+const tickMs = 15;          // tick pacing (~60 updates/sec)
+const maxTickBudget = 250;  // cap virtual ms earned per tick (tab switches, GC pauses)
+const maxDeforms = 32;      // stock deformations per tick (protects frame rate)
 
 // send latest tool position and progress bar
 function renderUpdate(send) {
@@ -147,109 +166,143 @@ function renderPath(send) {
         return;
     }
 
-    if (renderSteps-- === 0) {
-        animating = false;
-        renderPath(send);
-        return;
-    }
-
     if (animating === false || animateClear || renderSpeed === 0) {
-        renderUpdate(send);
-        renderDone = true;
-        animating = false;
-        animateClear = false;
-        send.done();
-        return;
+        return renderFinish(send);
     }
 
-    let next = path[pathIndex];
-    while (next && next.type === 'laser') {
-        last = next;
-        next = path[++pathIndex];
-    }
+    // (re)start the tick loop with a fresh virtual clock
+    tickSend = send;
+    tickLast = 0;
+    tickBudget = 0;
+    renderTick();
+}
 
-    if (!next) {
-        animating = false;
-        renderPath(send);
-        return;
-    }
-    pathIndex++;
+// flush final tool position / progress and close the animation
+function renderFinish(send) {
+    renderUpdate(send);
+    renderDone = true;
+    animating = false;
+    animateClear = false;
+    send.done();
+}
 
-    const firstTool = !tool && next.tool;
-    const toolChange = !firstTool && (tool.getID() !== next.tool.getID());
-    if (firstTool || toolChange) {
-        // on real tool change, go to safe Z first
-        if (tool && last.point) {
-            let pos = last.point = {
-                x: last.point.x,
-                y: last.point.y,
-                z: stock.z
-            };
-            send.data({ mesh_move: { toolID, pos }});
+// advance to the next path element, building its substep moves.
+// returns true when curMoves/curIndex/curSeglen/curID are ready to
+// consume, false when the path is exhausted
+function setupSegment(send) {
+    while (true) {
+        let next = path[pathIndex];
+        while (next && next.type === 'laser') {
+            last = next;
+            next = path[++pathIndex];
         }
-        updateTool(next.tool, send);
-    }
 
-    const id = toolID;
-    const rezstep = rez;
-    if (last) {
-        const lp = last.point, np = next.point;
-        last = next;
-        // dwell ops have no point
-        if (!np || !lp) {
-            return renderPath(send);
+        if (!next) {
+            animating = false;
+            return false;
         }
-        const dx = np.x - lp.x, dy = np.y - lp.y, dz = np.z - lp.z;
-        const dist = Math.sqrt(dx*dx  + dy*dy + dz*dz);
-        const md = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
-        const st = Math.max(1, Math.ceil(md / rezstep));
-        const sl = dist / st;
-        const mx = dx / st, my = dy / st, mz = dz / st;
-        const sp = next.speed;
-        const moves = [];
-        for (let i=0, x=lp.x, y=lp.y, z=lp.z; i<st; i++) {
-            moves.push({x,y,z,sp});
-            x += mx;
-            y += my;
-            z += mz;
+        pathIndex++;
+
+        const firstTool = !tool && next.tool;
+        const toolChange = !firstTool && (tool.getID() !== next.tool.getID());
+        if (firstTool || toolChange) {
+            // on real tool change, go to safe Z first
+            if (tool && last.point) {
+                let pos = last.point = {
+                    x: last.point.x,
+                    y: last.point.y,
+                    z: stock.z
+                };
+                send.data({ mesh_move: { toolID, pos }});
+            }
+            updateTool(next.tool, send);
         }
-        moves.push({ ...next.point, sp });
-        renderMoves(id, moves, sl, send);
-    } else {
+
+        const id = toolID;
+        if (last) {
+            const lp = last.point, np = next.point;
+            last = next;
+            // dwell ops have no point
+            if (!np || !lp) {
+                continue;
+            }
+            const dx = np.x - lp.x, dy = np.y - lp.y, dz = np.z - lp.z;
+            const dist = Math.sqrt(dx*dx  + dy*dy + dz*dz);
+            const md = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+            const st = Math.max(1, Math.ceil(md / rez));
+            const sl = dist / st;
+            const mx = dx / st, my = dy / st, mz = dz / st;
+            const sp = next.speed;
+            const moves = [];
+            for (let i=0, x=lp.x, y=lp.y, z=lp.z; i<st; i++) {
+                moves.push({x,y,z,sp});
+                x += mx;
+                y += my;
+                z += mz;
+            }
+            moves.push({ ...next.point, sp });
+            curID = id;
+            curMoves = moves;
+            curIndex = 0;
+            curSeglen = sl;
+            return true;
+        }
+
+        // first move of the path: place tool without deforming
         last = next;
         if (tool) {
             tool.pos = next.point;
             toolUpdate = { mesh_move: { id, pos: next.point, speed: next.speed }};
         }
-        renderPath(send);
     }
 }
 
-function renderMoves(id, moves, seglen, send, seed = 0) {
-    for (let index = seed; index<moves.length; index++) {
-        const pos = moves[index];
+// fixed-pace tick: convert real elapsed time into virtual animation time
+// (elapsed * renderSpeed, where renderSpeed is the radio multiplier) and
+// advance through substeps until the budget is spent. Each substep costs
+// (seglen / feed) * 60000 virtual ms; G0 / zero-feed moves use a small
+// fixed fallback. deformMesh + renderUpdate run once per tick, in the
+// final position, with a deformation cap so dense ticks don't stall.
+function renderTick() {
+    const send = tickSend;
+    if (renderDone) {
+        return;
+    }
+    if (animating === false || animateClear || renderSpeed === 0) {
+        return renderFinish(send);
+    }
+
+    const now = performance.now();
+    if (tickLast) {
+        tickBudget += Math.min((now - tickLast) * renderSpeed, maxTickBudget);
+    }
+    tickLast = now;
+
+    let deforms = 0;
+    while (tickBudget > 0) {
+        if (!curMoves || curIndex >= curMoves.length) {
+            if (renderSteps <= 0 || !setupSegment(send)) {
+                return renderFinish(send);
+            }
+            renderSteps--;
+        }
+        const pos = curMoves[curIndex++];
         if (!pos) {
-            throw `no pos @ ${index} of ${moves.length}`;
+            throw `no pos @ ${curIndex - 1} of ${curMoves.length}`;
         }
         tool.pos = pos;
-        deformMesh(pos, send);
-        toolUpdate = { mesh_move: { id, pos, speed: pos.sp }};
-        // pause renderer per substep, proportional to feed rate
-        // (sp in units/min, seglen in units) like the 3D animation.
-        // renderSpeed (radio multiplier) acts as a time divisor.
-        // G0 / zero-feed moves use a small fixed fallback
-        if (renderSpeed) {
-            const sp = pos.sp;
-            let time = sp ? (seglen / sp) * 60000 : 10;
-            time = Math.max(time / renderSpeed, minPause);
-            renderUpdate(send);
-            setTimeout(() => {
-                renderMoves(id, moves, seglen, send, index + 1);
-            }, time);
-            return;
+        toolUpdate = { mesh_move: { id: curID, pos, speed: pos.sp }};
+        if (deforms < maxDeforms) {
+            deformMesh(pos, send);
+            deforms++;
         }
+        const sp = pos.sp;
+        // G0 / zero-feed moves use a fixed fallback pace, as before
+        tickBudget -= Math.max(sp ? (curSeglen / sp) * 60000 : 10, 0.01);
     }
-    renderPath(send);
+
+    renderUpdate(send);
+    setTimeout(renderTick, tickMs);
 }
 
 // update stock mesh to reflect tool tip geometry at given XYZ position
