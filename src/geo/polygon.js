@@ -551,7 +551,14 @@ export class Polygon {
             ln = this.length,
             i = 0;
 
-        while (i < ln) np.push(this.points[i++]);
+        while (i < ln) {
+            let p = this.points[i++],
+                cp = np.push(p);
+            // carry point-level emitter flags across clones: push()
+            // clones points owned by another polygon, which would
+            // otherwise drop custom markers such as spiral rev0
+            if (p.rev0 === true) cp.rev0 = true;
+        }
 
         fields && fields.forEach(field => np[field] = this[field]);
         this.fillang && (np.fillang = this.fillang);

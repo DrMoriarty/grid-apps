@@ -324,7 +324,7 @@ class OpArea extends CamOp {
                     // spiral: its open fragments get flagged below so the
                     // emitter can apply a helical ease-down along the
                     // spiral's leading revolution
-                    let { outs, didSpiral } = genOuts(clip);
+                    let { outs, spiral: didSpiral } = genOuts(clip);
                     // if we see no offsets, re-check the mesh bottom Z then exit
                     if (outs.length === 0) {
                         if (flats && cleared && clipFull) {
