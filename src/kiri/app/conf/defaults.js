@@ -626,6 +626,7 @@ export const conf = {
                 camStockX: 5,
                 camStockY: 5,
                 camStockZ: 5,
+                camTabsClearance: 0.01,
                 camTabsDepth: 5,
                 camTabsHeight: 5,
                 camTabsMidline: false,

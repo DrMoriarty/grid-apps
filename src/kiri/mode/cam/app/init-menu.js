@@ -146,6 +146,7 @@ export function menu() {
     camTabsWidth:        newInput(LANG.ct_wdth_s, {title:LANG.ct_wdth_l, convert:toFloat, bound:bound(0.005,100), units}),
     camTabsHeight:       newInput(LANG.ct_hght_s, {title:LANG.ct_hght_l, convert:toFloat, bound:bound(0.005,100), units}),
     camTabsDepth:        newInput(LANG.ct_dpth_s, {title:LANG.ct_dpth_l, convert:toFloat, bound:bound(0.005,100), units}),
+    camTabsClearance:    newInput(LANG.ct_clrn_s, {title:LANG.ct_clrn_l, convert:toFloat, bound:bound(0,100), units}),
     separator:           newBlank({ class:"set-sep", driven }),
     camTabsMidline:      newBoolean(LANG.ct_midl_s, onBooleanClick, {title:LANG.ct_midl_l}),
     separator:           newBlank({ class:"set-sep", driven }),

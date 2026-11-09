@@ -742,6 +742,8 @@ self.lang['en-us'] = {
     ct_hght_l:      "height in workspace units",
     ct_dpth_s:      "depth",
     ct_dpth_l:      ["distance in workspace units","that the tab projects from","the part surface"],
+    ct_clrn_s:      "clearance",
+    ct_clrn_l:      ["height above the tab the tool","passes over when crossing","the tab"],
     ct_midl_s:      "midline",
     ct_midl_l:      ["use midline of tab","instead of z bottom","for double-sided work"],
     ct_nabl_s:      "auto",

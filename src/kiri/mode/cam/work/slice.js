@@ -234,9 +234,14 @@ export async function cam_slice(settings, widget, onupdate, ondone) {
     async function updateTab(tab) {
         tab.setAxisIndex(isIndexed ? -axisIndex : 0)
         let ts = new cam_slicer(tab);
-        let si = Object.keys(ts.zList).map(k => parseFloat(k));
-        si = [ ...si.map(v => v-0.01), ...si.map(v => v+0.01) ];
-        let zt = Math.max(...si);
+        let zi = Object.keys(ts.zList).map(k => parseFloat(k));
+        // coplanar slice epsilon: offset slice planes around the marker mesh
+        // so the box isn't sliced exactly on a face
+        let eps = 0.01;
+        let si = [ ...zi.map(v => v-eps), ...zi.map(v => v+eps) ];
+        // clearance above the tab marker top = plane the tool passes over
+        // the tab at (becomes tab.top in cutTabs)
+        let zt = Math.max(...zi) + (parseFloat(proc.camTabsClearance ?? 0.01) || 0);
         let zb = Math.min(...si);
         let shadow;
         await ts.slice(si, { each: data => {
