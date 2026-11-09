@@ -241,7 +241,7 @@ export async function cam_slice(settings, widget, onupdate, ondone) {
         let si = [ ...zi.map(v => v-eps), ...zi.map(v => v+eps) ];
         // clearance above the tab marker top = plane the tool passes over
         // the tab at (becomes tab.top in cutTabs)
-        let zt = Math.max(...zi) + (parseFloat(proc.camTabsClearance ?? 0.01) || 0);
+        let zt = Math.max(...zi) + (parseFloat(proc.camTabsClearance ?? 0) || 0);
         let zb = Math.min(...si);
         let shadow;
         await ts.slice(si, { each: data => {
