@@ -174,6 +174,19 @@ const minwork = {
         }
     },
 
+    // like broadcast, but `prep()` is called once per minion and returns
+    // { data, transfer } so each minion gets its own freshly allocated
+    // buffers (transferable buffers detach after the first postMessage,
+    // so a shared buffer cannot be transferred to multiple minions)
+    broadcastTransfer(cmd, prep) {
+        for (let minion of minions) {
+            const { data, transfer } = prep();
+            minion.postMessage({
+                cmd, ...data
+            }, transfer || []);
+        }
+    },
+
     setPoints(points) {
         let i = 0, floatP = new Float32Array(points.length * 3);
         for (let p of points) {

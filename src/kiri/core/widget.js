@@ -753,8 +753,13 @@ class Widget {
         return shadows[z] = POLY.setZ(shadow, z);
     }
 
-    // create a stack of faces in 1mm increments
+    // create a flat stack of faces in 1mm increments
     // the stacks are then used to produce shadowlines
+    // format: { buf, index } where buf is a Float32Array holding 9 floats
+    // per triangle (aX,aY,aZ,bX,bY,bZ,cX,cY,cZ) and index maps an integer
+    // z bucket to [start,end] float offsets of its contiguous triangle
+    // range in buf. this format serializes cheaply over postMessage
+    // (single memcpy per minion vs millions of Vector3 objects)
     #ensureShadowCache(pocket) {
         if (this.cache.shadow) {
             return this.cache.shadow;
@@ -762,28 +767,58 @@ class Widget {
         if (debug_shadow) console.time('shadow buckets');
         const geo = this.getGeoVertices({ unroll: true, translate: true });
         const length = geo.length;
-        const bounds = this.getBoundingBox();
-        const stack = {};
-        for (let i = Math.floor(bounds.min.z); i <= Math.ceil(bounds.max.z); i++) {
-            stack[i] = [];
-        }
-        for (let i = 0, ip = 0; i < length; i += 3) {
-            const a = new THREE.Vector3(geo[ip++], geo[ip++], geo[ip++]);
-            const b = new THREE.Vector3(geo[ip++], geo[ip++], geo[ip++]);
-            const c = new THREE.Vector3(geo[ip++], geo[ip++], geo[ip++]);
-            const n = THREE.computeFaceNormal(a, b, c);
+        // pass 1: filter faces by face normal z and record z bucket range
+        const keep = new Float32Array(length);
+        const ranges = [];
+        const counts = {};
+        let kept = 0;
+        for (let i = 0; i < length; i += 9) {
+            const ax = geo[i],     ay = geo[i + 1], az = geo[i + 2];
+            const bx = geo[i + 3], by = geo[i + 4], bz = geo[i + 5];
+            const cx = geo[i + 6], cy = geo[i + 7], cz = geo[i + 8];
+            // face normal z (identical to THREE.computeFaceNormal(a,b,c).z)
+            const ux = cx - bx, uy = cy - by, uz = cz - bz;
+            const vx = ax - bx, vy = ay - by, vz = az - bz;
+            const nx = uy * vz - uz * vy;
+            const ny = uz * vx - ux * vz;
+            let nz = ux * vy - uy * vx;
+            const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+            nz /= nl;
             // todo: use pocket to match normal values when set
-            if ((pocket && n.z > -pocket) || (!pocket && n.z < 0.001)) {
+            if ((pocket && nz > -pocket) || (!pocket && nz < 0.001)) {
                 continue;
             }
-            const minZ = Math.floor(Math.min(a.z, b.z, c.z));
-            const maxZ = Math.ceil(Math.max(a.z, b.z, c.z));
+            const minZ = Math.floor(Math.min(az, bz, cz));
+            const maxZ = Math.ceil(Math.max(az, bz, cz));
             for (let z = minZ; z <= maxZ; z++) {
-                stack[z].push(a, b, c);
+                counts[z] = (counts[z] || 0) + 1;
+            }
+            ranges.push(minZ, maxZ);
+            keep.set(geo.subarray(i, i + 9), kept);
+            kept += 9;
+        }
+        // pass 2: assign contiguous float ranges to each z bucket
+        const zkeys = Object.keys(counts).map(v => parseInt(v)).sort((a, b) => a - b);
+        const index = {};
+        let offset = 0;
+        for (let z of zkeys) {
+            index[z] = [offset, offset + counts[z] * 9];
+            offset += counts[z] * 9;
+        }
+        const buf = new Float32Array(offset);
+        const cursors = {};
+        for (let z of zkeys) {
+            cursors[z] = index[z][0];
+        }
+        for (let f = 0, k = 0; f < ranges.length; f += 2, k += 9) {
+            const minZ = ranges[f], maxZ = ranges[f + 1];
+            for (let z = minZ; z <= maxZ; z++) {
+                buf.set(keep.subarray(k, k + 9), cursors[z]);
+                cursors[z] += 9;
             }
         }
         if (debug_shadow) console.timeEnd('shadow buckets');
-        return this.cache.shadow = stack;
+        return this.cache.shadow = { buf, index };
     }
 
     async computeShadowStack(zlist, progress, pocket, up = 1) {
@@ -795,7 +830,11 @@ class Widget {
         let stack = this.#ensureShadowCache(pocket);
         let plist = [];
         if (debug_shadow) console.time('seed minion buckets');
-        work.minions.broadcast('cam_shadow_stack', stack);
+        work.minions.broadcastTransfer('cam_shadow_stack', () => {
+            // one detached copy of the flat stack per minion (transferable)
+            const buf = stack.buf.slice();
+            return { data: { buf, index: stack.index }, transfer: [buf.buffer] };
+        });
         if (debug_shadow) console.timeEnd('seed minion buckets');
         let pinc = 1 / zlist.length;
         let pval = 0;
@@ -822,6 +861,7 @@ class Widget {
 
     // union triangles > z (opt cap < ztop) into polygon(s)
     // slice the triangle stack matchingg z then union the results
+    // stack is the flat shadow cache format from #ensureShadowCache
     #computeShadowAt(z, ztop, cached, pocket) {
         let shadow_stack = this.cache.shadow_stack;
         if (shadow_stack && shadow_stack[z]) {
@@ -831,57 +871,69 @@ class Widget {
         if (debug_shadow) console.time(label);
         const found = [];
         const stack = cached ?? this.#ensureShadowCache(pocket);
-        let minZ = Math.floor(z);
-        let maxZ = Math.ceil(z);
-        let slices = [];
+        const buf = stack.buf;
+        const index = stack.index;
+        const minZ = Math.floor(z);
+        const maxZ = Math.ceil(z);
         for (let sz = minZ; sz <= maxZ; sz++) {
-            slices.push(stack[sz] ?? []);
-        }
-        for (let faces of slices)
-        for (let i = 0; i < faces.length; ) {
-            const a = faces[i++];
-            const b = faces[i++];
-            const c = faces[i++];
-            if (ztop && a.z > ztop && b.z > ztop && c.z > ztop) {
-                // skip faces over top threshold
+            const range = index[sz];
+            if (!range) {
                 continue;
             }
-            if (a.z < z && b.z < z && c.z < z) {
-                // skip faces under threshold
-                continue;
-            // } else if (a.z === z && a.z === b.z && a.z === c.z) {
-                // skip faces coplanar with z (shadow looks up)
-            } else if (a.z >= z && b.z >= z && c.z >= z) {
-                found.push([a, b, c]);
-            } else {
-                // check faces straddling threshold
-                const where = { under: [], over: [], on: [] };
-                checkOverUnderOn(newPoint(a.x, a.y, a.z), z, where);
-                checkOverUnderOn(newPoint(b.x, b.y, b.z), z, where);
-                checkOverUnderOn(newPoint(c.x, c.y, c.z), z, where);
-                if (where.on.length === 0 && (where.over.length === 2 || where.under.length === 2)) {
-                    // compute two point intersections and construct line
-                    let line = intersectPoints(where.over, where.under, z);
-                    if (line.length === 2) {
-                        if (where.over.length === 2) {
-                            found.push([where.over[1], line[0], line[1]]);
-                            found.push([where.over[0], where.over[1], line[0]]);
+            for (let i = range[0], end = range[1]; i < end; ) {
+                const ax = buf[i++], ay = buf[i++], az = buf[i++];
+                const bx = buf[i++], by = buf[i++], bz = buf[i++];
+                const cx = buf[i++], cy = buf[i++], cz = buf[i++];
+                if (ztop && az > ztop && bz > ztop && cz > ztop) {
+                    // skip faces over top threshold
+                    continue;
+                }
+                if (az < z && bz < z && cz < z) {
+                    // skip faces under threshold
+                    continue;
+                // } else if (az === z && az === bz && az === cz) {
+                    // skip faces coplanar with z (shadow looks up)
+                } else if (az >= z && bz >= z && cz >= z) {
+                    found.push([ax, ay, az, bx, by, bz, cx, cy, cz]);
+                } else {
+                    // check faces straddling threshold
+                    const where = { under: [], over: [], on: [] };
+                    checkOverUnderOn(newPoint(ax, ay, az), z, where);
+                    checkOverUnderOn(newPoint(bx, by, bz), z, where);
+                    checkOverUnderOn(newPoint(cx, cy, cz), z, where);
+                    if (where.on.length === 0 && (where.over.length === 2 || where.under.length === 2)) {
+                        // compute two point intersections and construct line
+                        let line = intersectPoints(where.over, where.under, z);
+                        if (line.length === 2) {
+                            if (where.over.length === 2) {
+                                found.push([
+                                    where.over[1].x, where.over[1].y, where.over[1].z,
+                                    line[0].x, line[0].y, line[0].z,
+                                    line[1].x, line[1].y, line[1].z]);
+                                found.push([
+                                    where.over[0].x, where.over[0].y, where.over[0].z,
+                                    where.over[1].x, where.over[1].y, where.over[1].z,
+                                    line[0].x, line[0].y, line[0].z]);
+                            } else {
+                                found.push([
+                                    where.over[0].x, where.over[0].y, where.over[0].z,
+                                    line[0].x, line[0].y, line[0].z,
+                                    line[1].x, line[1].y, line[1].z]);
+                            }
                         } else {
-                            found.push([where.over[0], line[0], line[1]]);
+                            console.log({ msg: "invalid ips", line: line, where: where });
                         }
-                    } else {
-                        console.log({ msg: "invalid ips", line: line, where: where });
                     }
                 }
             }
         }
 
         // map found tris to polygons
-        let polys = found.map(a => {
+        let polys = found.map(f => {
             return newPolygon()
-                .add(a[0].x, a[0].y, a[0].z)
-                .add(a[1].x, a[1].y, a[1].z)
-                .add(a[2].x, a[2].y, a[2].z);
+                .add(f[0], f[1], f[2])
+                .add(f[3], f[4], f[5])
+                .add(f[6], f[7], f[8]);
         });
 
         // recursively merge grid constrained subsets of polygons
