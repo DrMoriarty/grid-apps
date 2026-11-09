@@ -966,11 +966,14 @@ function stitchSpiral(rings, opts) {
             // the pocket-style finish ring must be reinstated
             if (finish && !stitched.finish_dup) {
                 let ring = (stitched.wall ?? stitched.loop).clone(true).setClosed();
-                // flag for the emitter: when this ring is the first cut at
-                // its depth (tool above ring z at emit time) it engages the
-                // material around the full tool circumference and runs at
-                // the camFullEngage feed scale. cutTabs() below may rebuild
-                // the polyline, so the marker is carried through it
+                // flag for the emitter: the ring engages the material
+                // around the full tool circumference (camFullEngage feed
+                // scale) only when the emitter outputs it before any
+                // spiral at its depth — the first cut into fresh material
+                // there. when it follows the spiral (the anchored order
+                // fde3050d produces) it runs at full feed. cutTabs() below
+                // may rebuild the polyline, so the marker is carried
+                // through it
                 ring.finish_ring = true;
                 result.push(ring);
             }
