@@ -12,6 +12,7 @@ import { getStockModel } from './stock.js';
 import { stockDebugSlice } from './stock-debug.js';
 import { Tool } from '../core/tool.js';
 import { util } from '../../../../geo/base.js';
+import { wasm_ctrl } from '../../../../geo/wasm.js';
 
 // state shared across all widget slicing
 let shared;
@@ -23,6 +24,13 @@ let shared;
  */
 export function cam_slice_pre(settings) {
     shared = { ops: { } };
+    // ensure the wasm clipper is available for shadow union / offset ops
+    // used heavily during CAM slicing, regardless of the "assembly"
+    // preference. all call sites pass `wasm: true` which silently falls
+    // back to the JS clipper until (or if) the module fails to load.
+    wasm_ctrl.enable();
+    // minions compute shadow layers in parallel and need the clipper too
+    self.kiri_worker?.minions?.broadcast('wasm', { enable: true });
 }
 
 /**

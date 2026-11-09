@@ -29,13 +29,19 @@ const end = function () {
 export class Slicer {
     constructor(widget, options = { zlist: true, zline: true, lines: false }) {
         this.minions = self.kiri_worker?.minions;
+        this.widget = widget;
         this.options = {};
         this.setOptions(options);
 
         if (widget) {
             this.threaded = this.minions && this.minions.running;
             this.setPoints(widget.getGeoVertices({ unroll: true, translate: true }));
-            this.computeFeatures();
+            // reuse feature stats cached on the widget when the vertex
+            // buffer is unchanged (slicers are created many times over
+            // the same widget during a single CAM slicing run)
+            if (!this.restoreFeatures()) {
+                this.computeFeatures();
+            }
         }
     }
 
@@ -58,6 +64,28 @@ export class Slicer {
         return this;
     }
 
+    // restore previously computed feature stats from the widget cache.
+    // valid only when the vertex buffer is unchanged (identity check on
+    // the points array: any geometry / axis rotation change produces a
+    // new array from getGeoVertices). returns true when restored.
+    restoreFeatures() {
+        const widget = this.widget;
+        if (!widget) {
+            return false;
+        }
+        const cached = widget.cache.slicer_features;
+        if (!cached || cached.points !== this.points) {
+            return false;
+        }
+        this.bounds = cached.bounds;
+        this.zList = cached.zList;
+        this.zLine = cached.zLine;
+        this.zFlatAll = cached.zFlatAll;
+        this.zFlatUp = cached.zFlatUp;
+        this.zFlat = this.options.zflatup ? this.zFlatUp : this.zFlatAll;
+        return true;
+    }
+
     // gather z-index stats
     // these are used for auto-slicing in laser
     // and to flats detection in CAM mode
@@ -67,13 +95,27 @@ export class Slicer {
         const opt = this.setOptions(options);
         const bounds = this.bounds = new THREE.Box3();
         const points = this.points;
-        const zFlat = this.zFlat;
-        const zLine = this.zLine;
-        const zList = this.zList;
+        const zFlat = this.zFlat = {};     // accumulated flat area at z height
+        const zFlatUp = this.zFlatUp = {}; // accumulated up-facing flat area
+        const zLine = this.zLine = {};     // count of z coplanar lines
+        const zList = this.zList = {};     // count of z values for auto slicing
 
         function countZ(z) {
             z = z.round(zDecimal);
             zList[z] = (zList[z] || 0) + 1;
+        }
+
+        // normal z of a face, identical to THREE.computeFaceNormal(a,b,c).z
+        // but without allocations in the hot loop. used to filter
+        // up-facing flats for the zflatup option
+        function faceNormalZ(p1, p2, p3) {
+            const ux = p3.x - p2.x, uy = p3.y - p2.y, uz = p3.z - p2.z;
+            const vx = p1.x - p2.x, vy = p1.y - p2.y, vz = p1.z - p2.z;
+            const nx = uy * vz - uz * vy;
+            const ny = uz * vx - ux * vz;
+            let nz = ux * vy - uy * vx;
+            const nl = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+            return nz / nl;
         }
 
         let p1 = newPoint(0, 0, 0),
@@ -100,18 +142,15 @@ export class Slicer {
             }
             // use co-flat and co-line detection to adjust slice Z
             if (Math.abs(p1.z - p2.z) < epsilon && Math.abs(p2.z - p3.z) < epsilon) {
-                // detect zFlat faces to avoid slicing directly on them
-                if (opt.zflatup) {
-                    // filter to up-facing flats (more expensive)
-                    let norm = THREE.computeFaceNormal(p1,p2,p3);
-                    if (norm.z < -0.00001) continue;
-                }
+                // detect zFlat faces to avoid slicing directly on them.
+                // compute both flat variants in one pass so the widget
+                // cache can serve slicers with either zflatup setting
                 let zkey = p1.z.toFixed(zDecimal),
                     area = Math.abs(util.area2(p1, p2, p3)) / 2;
-                if (!zFlat[zkey]) {
-                    zFlat[zkey] = area;
-                } else {
-                    zFlat[zkey] += area;
+                zFlat[zkey] = (zFlat[zkey] || 0) + area;
+                // filter to up-facing flats (more expensive)
+                if (faceNormalZ(p1, p2, p3) >= -0.00001) {
+                    zFlatUp[zkey] = (zFlatUp[zkey] || 0) + area;
                 }
             } else if (opt.zline) {
                 // detect zLine (curved region tops/bottoms)
@@ -134,7 +173,25 @@ export class Slicer {
             }
         }
 
+        // zFlat honors the zflatup option: up-facing flats only when set
+        this.zFlat = opt.zflatup ? zFlatUp : zFlat;
+
         end('compute features');
+
+        // cache features on the widget for reuse by subsequent slicers.
+        // only cache complete stats (zlist and zline both enabled) so a
+        // slicer created with partial options cannot seed a partial cache
+        if (this.widget && opt.zlist && opt.zline) {
+            this.widget.cache.slicer_features = {
+                points,
+                bounds,
+                zList,
+                zLine,
+                zFlatAll: zFlat,
+                zFlatUp
+            };
+        }
+
         // console.log({ bounds, zFlat, zLine, zList });
 
         return this;

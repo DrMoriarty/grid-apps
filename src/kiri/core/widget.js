@@ -193,6 +193,8 @@ class Widget {
         this.modified = true;
         this.boundingBoxNeedsUpdate = true;
         this.clearShadows();
+        // drop cached slicer feature stats (computeFeatures output)
+        delete this.cache.slicer_features;
         if (reason !== 'axis') {
             this.cache.geo = undefined;
             this.geomVersion++;  // Increment version to invalidate edge cache
@@ -736,7 +738,8 @@ class Widget {
         // shift shadow probeline down a fraction to capture z flats with FP noise
         let shadow = this.#computeShadowAt(z - 0.005, minZabove, undefined, pocket);
         if (minZabove < Infinity) {
-            shadow = POLY.union([...shadow, ...shadows[minZabove]], 0, true, { wasm: false });
+            // wasm clipper degrades to the JS path when not loaded
+            shadow = POLY.union([...shadow, ...shadows[minZabove]], 0, true, { wasm: true });
             // cull interior sliver voids
             if (!pocket)
             for (let poly of shadow) {
@@ -941,8 +944,9 @@ class Widget {
 
         // for a more perfect union, pump shadows to merge very close lines
         // todo: create clipper only version that avoids round trip thru geo classes
-        polys = POLY.offset(polys, 0.01);
-        polys = POLY.offset(polys, -0.01);
+        // wasm clipper degrades to the JS path when not loaded
+        polys = POLY.offset(polys, 0.01, { wasm: true });
+        polys = POLY.offset(polys, -0.01, { wasm: true });
 
         if (debug_shadow) console.timeEnd(label);
         return polys;

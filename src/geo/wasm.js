@@ -191,6 +191,11 @@ export function enable() {
                 union: polyUnion,
                 offset: polyOffset
             };
+        })
+        .catch(e => {
+            // leave base.wasm unset so callers fall back to the JS clipper
+            console.log('wasm load failed', e.message || e);
+            delete base._wasm;
         });
 }
 
