@@ -190,6 +190,20 @@ export class Slicer {
             b += step;
         }
 
+        // precompute z bounds for each bucket once (avoids O(tris * zlen)
+        // Math.min/max spread calls in the hot triangle loop below)
+        for (let bucket of buckets) {
+            const bzs = bucket.zs;
+            let bmin = bzs[0], bmax = bzs[0];
+            for (let i = 1; i < bzs.length; i++) {
+                const z = bzs[i];
+                if (z < bmin) bmin = z;
+                if (z > bmax) bmax = z;
+            }
+            bucket.zmin = bmin;
+            bucket.zmax = bmax;
+        }
+
         let p1 = newPoint(0, 0, 0),
             p2 = newPoint(0, 0, 0),
             p3 = newPoint(0, 0, 0),
@@ -203,9 +217,9 @@ export class Slicer {
             let zmin = Math.min(p1.z, p2.z, p3.z);
             let zmax = Math.max(p1.z, p2.z, p3.z);
             for (let bucket of buckets) {
-                const { zs, index } = bucket;
-                const min = Math.min(...zs);
-                const max = Math.max(...zs);
+                const { index } = bucket;
+                const min = bucket.zmin;
+                const max = bucket.zmax;
                 if (zmin < min && zmax < min) {
                     if (Math.abs(zmin - min) > ep && Math.abs(zmax - min) > ep) {
                         continue;
