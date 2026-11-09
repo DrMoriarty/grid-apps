@@ -52,6 +52,7 @@ export function init(worker) {
 
         tool = null;
         last = null;
+        toolUpdate = null;
         animating = false;
         animateClear = false;
 
@@ -356,5 +357,16 @@ function updateTool(toolobj, send) {
         const dz = prof[i++];
         pos[(dx * pix + dy) * 3 + 2] = -dz;
     }
-    send.data({ mesh_add: { id:++toolID, ind, sab }});
+    // place the new tool mesh explicitly at its starting position so it
+    // never flashes at the world origin until the first animation tick
+    const start =
+        (last && last.point) ||
+        (path.find(o => o.tool && o.point) || {}).point ||
+        // no tool path point yet: hover at safe Z over stock center
+        { x: center.x, y: center.y, z: stock.z };
+    tool.pos = start;
+    toolUpdate = null;
+    const id = ++toolID;
+    send.data({ mesh_add: { id, ind, sab }});
+    send.data({ mesh_move: { id, pos: start }});
 }

@@ -39,7 +39,7 @@ export function animate_clear(api) {
     space.update();
 }
 
-export function animate(api, delay) {
+export function animate(api) {
     api.show.busy("building animation");
     let settings = api.conf.get();
     client.animate_setup(settings, data => {
@@ -72,7 +72,9 @@ export function animate(api, delay) {
         anim.radios.forEach((radio, index) => {
             radio.onchange = () => setSpeed(index);
         });
-        setTimeout(step, delay || 0);
+
+        // no auto first step: the worker places the tool mesh explicitly at
+        // its start position during setup, so playback waits for play/step
 
         button.replay.onclick = replay;
         button.play.onclick = play;
@@ -245,7 +247,7 @@ function setSpeed(index) {
 function replay() {
     animate_clear(api);
     setTimeout(() => {
-        animate(api, 50);
+        animate(api);
     }, 250);
 }
 
