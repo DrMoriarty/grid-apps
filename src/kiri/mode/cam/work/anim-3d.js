@@ -47,6 +47,7 @@ export function init(worker) {
         stock = settings.stock;
         tool = null;
         last = null;
+        toolUpdateMsg = undefined;
         animating = false;
         animateClear = false;
         stockIndex = 0;
@@ -305,12 +306,27 @@ function toolUpdate(toolid, send) {
         mesh = cylinder(tlen, frad, frad, 20, true)
             .add(cylinder(slen, srad, srad, 20, true).translate(0, 0, flen / 2));
     }
-    mesh = mesh.translate(0, 0, (tlen - stockZ) / 2);
+    // center geometry so the tool tip sits at z = 0: mesh_move z then
+    // means "tip z" for both indexed (tip at rotation center) and
+    // non-indexed (tip at commanded z) modes
+    mesh = mesh.translate(0, 0, tlen / 2);
     const raw = mesh.getMesh();
     const vertex = raw.vertProperties;
     const index = raw.triVerts;
     toolMesh = { root: mesh, index, vertex, bounds: CSG.toBox3(mesh) };
     send.data({ mesh_add: { id: --toolID, ind: index, pos: vertex } });
+    // position the new tool mesh explicitly so it never appears at the
+    // origin: last known point, else hovering at safe height (stock top)
+    // over the first path point
+    let pos = last?.point;
+    if (!pos) {
+        const first = path.find(p => p.point);
+        pos = first ?
+            { x: first.point.x, y: first.point.y, z: stock.z, a: first.point.a } :
+            { x: 0, y: 0, z: stock.z };
+    }
+    toolMove(pos);
+    send.data(toolUpdateMsg);
 }
 
 class Stock {

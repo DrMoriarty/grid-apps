@@ -50,7 +50,7 @@ export function animate_clear2(api) {
     space.update();
 }
 
-export function animate2(api, delay) {
+export function animate2(api) {
     api.show.busy("building animation");
     let settings = api.conf.get();
     dark = settings.controller.dark;
@@ -93,7 +93,8 @@ export function animate2(api, delay) {
         anim.radios.forEach((radio, index) => {
             radio.onchange = () => setSpeed(index);
         });
-        setTimeout(step, delay || 0);
+        // no auto-start: playback begins only on play (or step);
+        // the tool mesh is positioned explicitly by the worker
         toggleTrans(undefined, false);
         origin = settings.origin;
 
@@ -373,6 +374,6 @@ function setSpeed(index) {
 function replay() {
     animate_clear2(api);
     setTimeout(() => {
-        animate2(api, 50);
+        animate2(api);
     }, 250);
 }
