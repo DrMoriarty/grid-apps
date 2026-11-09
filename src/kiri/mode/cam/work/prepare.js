@@ -146,6 +146,12 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         travelBounds,
         spindle = 0,
         spindleMax = device.spindleMax,
+        // depth levels (keyed by slice z, see pocket()) in which a spiral
+        // has already started emitting. drives order-based engage feed
+        // decisions in polyEmit: the first spiral at a depth engages
+        // revolution 0, and a finish ring engages only when it is emitted
+        // before any spiral at its depth
+        spiralDepths = {},
         tolerance = 0,
         easeThrottle = (90 - Math.min(90, camEaseAngle)) / 180,
         easeDzPerMm = Math.tan(camEaseAngle * Math.PI / 180);
@@ -796,6 +802,10 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
     function pocket({ slices, cutdir, depthFirst, outline, progress }) {
         let total = 0;
         let depthData = [];
+        // engage order tracking is per pocket (per area): each area's first
+        // spiral at a depth engages fresh material, mirroring the per-call
+        // engaged level flags in descend() below
+        spiralDepths = {};
 
         for (let slice of slices) {
             let polys = [], t = [], c = [];
@@ -809,6 +819,11 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
                 // emitter flags must survive the clone (revolution-0
                 // spiral scoping, finish-ring engage detection)
                 if (depthFirst) { poly = poly.clone(false, [ 'spiral', 'finish_ring' ]); poly.parent = child ? 1 : 0 }
+                // stamp the depth-level engage key used by polyEmit's
+                // order-based engage decisions. polys of one slice share
+                // the slice z, which stays valid across the leave_z point
+                // shift and tab lifts that per-point z values undergo
+                poly._engageZ = slice.z;
                 // place poly into top or child bucket
                 if (child) c.push(poly); else t.push(poly);
                 polys.push(poly);
@@ -943,15 +958,29 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         let spiraling = poly.spiral === true;
 
         // finish ring engage detection must happen before any emission
-        // below changes the print point. the ring is a full-engagement
-        // cut when the tool starts it from above the ring's z, i.e. the
-        // ring is the first cut at this depth. when it follows the spiral
-        // (or any other loop at the same depth) the tool is already at
-        // depth and material around the ring is partially cleared, so it
-        // runs at full feed. printPoint is in work coordinates while poly
-        // points are in widget coordinates, hence the wmz shift
+        // below changes the print point. whether the ring is a
+        // full-engagement first cut is decided by EMISSION ORDER at its
+        // depth, not by the height the tool approaches from: the ring
+        // engages only when no spiral has started at its depth yet (the
+        // greedy router emitted it ahead of that depth's spiral). once a
+        // spiral runs at the ring's depth, the material around the ring
+        // is partially cleared and the ring runs at full feed regardless
+        // of the approach height. the depth key is the slice z stamped in
+        // pocket(); per-point z is unsuitable there (leave_z shifts and
+        // tab lifts make it inconsistent between spiral and ring polys).
+        // spiral engage is scoped to the first spiral started at a depth:
+        // its revolution 0 is the first cut into fresh material even when
+        // a ring (or another loop) was emitted ahead of it and consumed
+        // the descend() level flag (tasks #bf03adef, #2f8cca06, #cfca80a4)
+        let pzKey = poly._engageZ;
+        let trackEngage = typeof pzKey === 'number';
         let ringEngage = poly.finish_ring === true &&
-            printPoint.z - wmz > poly.getZ() + 0.001;
+            trackEngage && !spiralDepths[pzKey];
+        let spiralEngage = false;
+        if (spiraling && trackEngage) {
+            spiralEngage = !spiralDepths[pzKey];
+            spiralDepths[pzKey] = true;
+        }
 
         if (poly.isClosed()) {
             // only look for the cloests starting point for closed loops
@@ -1068,14 +1097,13 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
         let lastOut;
         // engage is strictly boolean: the poly2polyEmit emitter signature
         // passes an emission counter here, which must not enable the ramp
-        let engageOpts = (engage === true || ringEngage) ?
+        let engageOpts = (engage === true || ringEngage || spiralEngage) ?
             { feed: feedRate * camFullEngage } : {};
-        // on a stitched spiral, scope the engage feed to revolution 0
-        // (its points are flagged at stitch time, and the flags survive
-        // clones, reversals, arc detection and tab cutting): inner
-        // revolutions are offset cuts in partially cleared material and
-        // run at full feed (task #cfca80a4)
-        let spiralEngage = spiraling && engage === true && !ringEngage;
+        // on a stitched spiral, spiralEngage (computed above from emission
+        // order) scopes the engage feed to revolution 0 (its points are
+        // flagged at stitch time, and the flags survive clones, reversals,
+        // arc detection and tab cutting): inner revolutions are offset cuts
+        // in partially cleared material and run at full feed (task #cfca80a4)
 
         // arc output must handle shortened arcs from ease-down
         // future support for 3d helical arcs will fix this
