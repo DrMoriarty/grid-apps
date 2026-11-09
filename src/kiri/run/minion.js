@@ -357,6 +357,7 @@ const funcs = self.minion = {
     // cam widget shadow
 
     cam_shadow_stack(data, seq) {
+        // data is the flat shadow stack: { buf: Float32Array, index: { z: [start,end] } }
         cache.shadow_stack = data.clear ? undefined : data;
     },
 
