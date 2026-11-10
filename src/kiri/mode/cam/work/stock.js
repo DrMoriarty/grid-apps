@@ -130,6 +130,8 @@ export class StockModel {
      *            Tool.generateProfile(this.resolution).profile
      *   camLines {Array} polylines of points with x,y,z in world coords
      *   down, leave, leave_z, ov_topz, ov_botz {any} raw op params, journalled
+     *   onProgress {Function} optional callback invoked periodically with a
+     *     0..1 fraction of the sweep recording (not journalled)
      * @returns {Object} the journal record
      */
     recordSweep(rec) {
@@ -164,7 +166,7 @@ export class StockModel {
             return entry;
         }
 
-        this.#strike(rec.camLines, profile);
+        this.#strike(rec.camLines, profile, rec.onProgress, rec.tool?.profileDim?.maxo);
         return entry;
     }
 
@@ -176,12 +178,56 @@ export class StockModel {
      * touch). Tab/clamp lifts and ov_topz/ov_botz are already baked into
      * camLines by the time they are recorded, so no extra handling here.
      *
+     * Stamp spacing along the path is derived from the tool profile's
+     * horizontal radius in grid pixels: consecutive stamps one radius apart
+     * still overlap by half their footprint diameter, so the swept band
+     * stays gapless in its interior (neighboring passes at the op stepover
+     * cover the rest). Sampling every `resolution` instead would stamp the
+     * same footprint once per grid cell of travel — for stock-scale clears
+     * (camRoughAll) that multiplies the work by ~tool-radius/resolution
+     * (hundreds-fold at default animesh), turning slice into a hours-long
+     * freeze. The only loss is a sub-radius fringe at the outer envelope of
+     * the sweep where the disc boundary scallops between stamps; those
+     * cells keep the stock top, which is the safe direction for every
+     * consumer (skipclear/clearedRegion mask less, rapids stay higher).
+     *
      * @param {Array} camLines polylines (Polygon or point array, points with x,y,z)
      * @param {Float32Array} profile raster tool profile (grid-pixel offsets)
+     * @param {Function} [onProgress] optional callback with a 0..1 fraction
+     * @param {number} [radHint] cutting footprint radius in grid pixels
+     *   (Tool.profileDim.maxo). fallback scans the profile, which may
+     *   include shaft points (never cutting) and so errs denser
      */
-    #strike(camLines, profile) {
+    #strike(camLines, profile, onProgress, radHint) {
         const { stockTop, resolution } = this;
-        const maxStep = resolution;
+        // horizontal radius of the cutting footprint in grid pixels, used
+        // as the stamp spacing below (maxo covers flute points; shaft
+        // points never write, see #stamp)
+        let radpx = 0;
+        if (radHint > 0) {
+            radpx = radHint;
+        } else {
+            for (let i = 0; i < profile.length; i += 3) {
+                const tx = Math.abs(profile[i]),
+                    ty = Math.abs(profile[i + 1]);
+                if (tx > radpx) {
+                    radpx = tx;
+                }
+                if (ty > radpx) {
+                    radpx = ty;
+                }
+            }
+        }
+        const maxStep = Math.max(resolution, Math.round(radpx) * resolution);
+        // progress denominator: total path points (subdivided sample count
+        // is always >= this, so the reported fraction is clamped)
+        let total = 0;
+        if (onProgress) {
+            for (let line of camLines) {
+                total += (line.points || line)?.length || 0;
+            }
+        }
+        let done = 0;
         for (let line of camLines) {
             const pts = line.points || line;
             if (!pts || pts.length === 0) {
@@ -190,6 +236,7 @@ export class StockModel {
             // single-point line (e.g. drill mark): stamp directly
             if (pts.length === 1) {
                 const p = pts[0];
+                done++;
                 if (p.z < stockTop) {
                     this.#stamp(p.x, p.y, p.z, profile);
                 }
@@ -206,6 +253,10 @@ export class StockModel {
                 for (let s = 0; s <= n; s++) {
                     const t = s / n,
                         z = prev.z + (p.z - prev.z) * t;
+                    done++;
+                    if (onProgress && (done & 16383) === 0) {
+                        onProgress(Math.min(1, done / total));
+                    }
                     // z filter: above the stock surface nothing is removed
                     if (z >= stockTop) {
                         continue;
@@ -219,6 +270,9 @@ export class StockModel {
                 }
                 prev = p;
             }
+        }
+        if (onProgress) {
+            onProgress(1);
         }
     }
 
@@ -435,10 +489,13 @@ export function areaPassCamLines(area) {
  *   as undefined
  * @param {OpArea|Array} area a sliced OpArea pass, or a ready-made flat
  *   camLines array (contour's topo slices)
+ * @param {Function} [onProgress] optional 0..1 callback invoked while the
+ *   sweep is folded into the heightmap (stock-scale sweeps take seconds
+ *   even sampled; without it the slice progress bar freezes)
  * @returns {Object|undefined} the journal record, or undefined when nothing
  *   was recorded (no model, invalid model, no camLines)
  */
-export function recordAreaSweep(state, type, conf, area) {
+export function recordAreaSweep(state, type, conf, area, onProgress) {
     const stockModel = state.stockModel;
     if (!stockModel) {
         return undefined;
@@ -469,7 +526,8 @@ export function recordAreaSweep(state, type, conf, area) {
         leave: conf.leave_xy ?? conf.leave,
         leave_z: conf.leave_z,
         ov_topz: conf.ov_topz,
-        ov_botz: conf.ov_botz
+        ov_botz: conf.ov_botz,
+        onProgress
     });
 }
 

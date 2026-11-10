@@ -130,8 +130,10 @@ class OpRough extends CamOp {
         let bas = 0;
         for (let op of ops_list) {
             await op.slice(pct => progress(bas + pct * per));
-            // record this pass' material removal into the stock model
-            this.recordStockSweep(op);
+            // record this pass' material removal into the stock model;
+            // stock-scale sweeps (camRoughAll) take seconds even with
+            // sampled stamping, so thread progress to keep the bar alive
+            this.recordStockSweep(op, pct => progress(bas + pct * per));
             bas += per;
         }
     }
@@ -144,9 +146,10 @@ class OpRough extends CamOp {
      * invalidation) and the omitthru/holes rationale.
      *
      * @param {OpArea} area a pass from ops_list, post-slice()
+     * @param {Function} [onProgress] optional 0..1 recording progress
      */
-    recordStockSweep(area) {
-        recordAreaSweep(this.state, 'rough', area.op, area);
+    recordStockSweep(area, onProgress) {
+        recordAreaSweep(this.state, 'rough', area.op, area, onProgress);
     }
 
     async prepare(ops, progress) {
