@@ -222,23 +222,24 @@ class OpArea extends CamOp {
                     // sits at or below this op's raised tip (cut plane +
                     // leave_z), so leave stock is respected. missing or
                     // invalid model (rotary work) falls through untouched
+                    // effective tip plane for stock-model queries. z includes
+                    // flatOff for flats passes (v + zMov above); the tip plane
+                    // paths actually cut at is z - zMov, so the "already
+                    // cleared" threshold must be raised from the real tip, not
+                    // the flatOff-shifted value. flats omit leave_z: their job
+                    // is to shave the leave_z skin off flat planes, so
+                    // "cleared" means remaining material at or below the bare
+                    // cut plane. at a plane level with the stock top, lower
+                    // the threshold strictly below it: virgin cells (never
+                    // touched by roughing, heightmap == stock top) must not
+                    // count as cleared, or facing the raw stock top would be
+                    // skipped. shared by skipclear masking below and the
+                    // void-anchored ring regeneration further down
+                    let f = z - zMov;
+                    let tipz = flats ?
+                        (f >= zTop - ts_eps ? f - ts_eps : f) :
+                        f + (op.leave_z ?? 0);
                     if (op.skipclear && state.stockModel?.valid) {
-                        // z includes flatOff for flats passes (v + zMov above);
-                        // the tip plane paths actually cut at is z - zMov, so
-                        // the "already cleared" threshold must be raised from
-                        // the real tip, not the flatOff-shifted value
-                        // flats omit leave_z: their job is to shave the
-                        // leave_z skin off flat planes, so "cleared" means
-                        // remaining material at or below the bare cut plane.
-                        // at a plane level with the stock top, lower the
-                        // threshold strictly below it: virgin cells (never
-                        // touched by roughing, heightmap == stock top) must
-                        // not count as cleared, or facing the raw stock top
-                        // would be skipped
-                        let f = z - zMov;
-                        let tipz = flats ?
-                            (f >= zTop - ts_eps ? f - ts_eps : f) :
-                            f + (op.leave_z ?? 0);
                         cleared = state.stockModel.clearedRegion(clip, tipz);
                         if (cleared.length) {
                             clipFull = clip;
@@ -325,6 +326,47 @@ class OpArea extends CamOp {
                     // emitter can apply a helical ease-down along the
                     // spiral's leading revolution
                     let { outs, spiral: didSpiral } = genOuts(clip);
+                    // void-anchored ring regeneration (free-edge first
+                    // machining). the classic wall-anchored progression
+                    // above anchors ring 1 at the occupied boundary
+                    // (firstOff = -(R + leave)) and steps inward: when the
+                    // stock removal model verifies that material adjacent
+                    // to the clip was already removed down to this plane
+                    // (a ledge/shelf bordering a roughed cavity, a pocket
+                    // re-cleaned after roughing), that progression wastes
+                    // passes — ring 1 cuts the full remaining width in one
+                    // full-engagement pass and later rings ride over
+                    // verified void. when the model is present and valid,
+                    // replace the ring set with one anchored on the
+                    // verified-void boundary: ring 1 hangs (R - S) beyond
+                    // the free edge over model-verified air, rings advance
+                    // by the stepover S toward the occupied wall, and the
+                    // wall-anchored ring(s) are appended last as a light
+                    // finishing pass. falls through to the legacy rings
+                    // above when the model is missing/invalid (rotary
+                    // work), in spiral mode, or when the regenerated set
+                    // would leave material uncovered (see freeAnchorRings)
+                    if (!didSpiral && !op.ignore && !op.walls &&
+                        state.stockModel?.valid &&
+                        toolOver < toolDiam / 2 - ts_eps
+                    ) {
+                        let alt = freeAnchorRings({
+                            stockModel: state.stockModel,
+                            clip,
+                            clipBase: clipFull ?? clip,
+                            shadow,
+                            tipz,
+                            z: z - zMov,
+                            R: toolDiam / 2,
+                            L: op.leave_xy ?? 0,
+                            S: toolOver,
+                            firstOff,
+                            finishCut: finish_cut,
+                            offopt,
+                            steps: op.steps ?? 999
+                        });
+                        if (alt) outs = alt;
+                    }
                     // if we see no offsets, re-check the mesh bottom Z then exit
                     if (outs.length === 0) {
                         if (flats && cleared && clipFull) {
@@ -1188,6 +1230,223 @@ function stitchRegion(levels, opts) {
         // anchor for the next depth's / region's spiral
         end: spiral.last()
     };
+}
+
+/**
+ * Void-anchored clearing ring generation (free-edge first machining).
+ *
+ * Distinguishes the two kinds of edges a clear-mode clip can have:
+ *
+ *   - OCCUPIED edge: borders material rising above the cut plane (the
+ *     part cross-section, `shadow`). The tool axis must keep a standoff
+ *     of R + leave from it — the legacy `firstOff` ring anchor.
+ *   - FREE edge: borders material the stock removal model (heightmap)
+ *     verifies as already removed down to this op's tip plane. The tool
+ *     disk may overhang such an edge: the axis may travel over verified
+ *     void as long as the disk still engages fresh material.
+ *
+ * The generated ring set replaces the legacy wall-anchored progression:
+ *
+ *   ring 1 hangs (R - S) beyond the free edge, over model-verified air,
+ *     so its disk engages only ~S (stepover) of fresh material;
+ *   rings advance by S toward the occupied wall, each removing ~S of
+ *     new material (no full-width passes, no idle rings over void);
+ *   the family stops at the first ring with no fresh material to cut,
+ *     a ring entirely outside the safe axis zone, or the `steps` cap;
+ *   the wall-anchored ring(s) (legacy firstOff and finish_cut anchors,
+ *     computed from the working clip exactly as the legacy generator
+ *     does) are appended last, so the wall gets a light finishing pass.
+ *
+ * Every candidate ring is constrained twice before emission:
+ *   - intersected with the "safe" axis zone = tool reach of the clip
+ *     (clip dilated by R) minus the shadow dilated by R + leave, so no
+ *     axis point ever sits closer than R + leave to material above the
+ *     cut plane, and no ring wanders outside the op's reach;
+ *   - engagement-checked against the remaining material (`mat` = clip
+ *     minus verified void): a ring whose disk removes no fresh material
+ *     ends the family instead of being emitted as an idle pass.
+ *
+ * The stock model's cleared-cell strips are a pixelated (heightmap grid)
+ * approximation of the void, so they are unioned and closed (dilate +
+ * erode by one grid cell) before use — this de-staircases the free-edge
+ * contours the rings anchor to without moving the boundary outward.
+ * Undercounted void (conservative corner test in clearedRegion) only
+ * shrinks the allowed overhang, never extends it.
+ *
+ * A coverage net guards against pathological geometry: when the
+ * generated set (family + wall rings) leaves more material uncut than a
+ * generous threshold, the caller keeps the legacy rings, which always
+ * cover the full clip by construction.
+ *
+ * @param {Object} ctx
+ * @param {StockModel} ctx.stockModel valid stock removal model
+ * @param {Polygon[]} ctx.clip working clip (post skipclear reduction)
+ * @param {Polygon[]} ctx.clipBase full clip before reduction (or clip)
+ * @param {Polygon[]} ctx.shadow part cross-section at the cut plane
+ * @param {number} ctx.tipz effective tip plane for model queries
+ * @param {number} ctx.z world z for generated path polys
+ * @param {number} ctx.R tool radius (flute diameter / 2)
+ * @param {number} ctx.L leave_xy wall allowance
+ * @param {number} ctx.S stepover (must be < R, checked by caller)
+ * @param {number} ctx.firstOff legacy first offset, -(R + L)
+ * @param {number} ctx.finishCut legacy finish_cut offset (0 = none)
+ * @param {Object} ctx.offopt shared POLY.offset options
+ * @param {number} ctx.steps ring count cap (op.steps)
+ * @returns {Polygon[]|undefined} replacement ring set, or undefined to
+ *   keep the legacy rings
+ */
+function freeAnchorRings(ctx) {
+    const { stockModel, clip, clipBase, shadow, tipz, z, R, L, S, firstOff, finishCut, offopt, steps } = ctx;
+
+    // axis-safe zone: within tool reach of the clip, clear of the shadow
+    // dilated by the tool radius + wall allowance
+    let reach = POLY.offset(clipBase, [ R + ts_eps ], { count: 1, flat: true, z, ...offopt, minArea: 0.01 });
+    if (!reach.length) {
+        return undefined;
+    }
+    // verified void within reach: heightmap cells swept to/below this
+    // op's tip plane by prior operations
+    let voidPolys = stockModel.clearedRegion(reach, tipz);
+    if (!voidPolys.length) {
+        return undefined;
+    }
+    // de-staircase the strip union (see docblock) with a morphological
+    // close of one grid cell radius; round joins avoid miter spikes.
+    // fresh opts object per call: POLY.offset accumulates into opts.outs,
+    // so a shared object would concatenate the dilate and erode results
+    let sm = Math.max(stockModel.resolution, 0.01);
+    voidPolys = POLY.offset(voidPolys, [ sm ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    });
+    voidPolys = POLY.offset(voidPolys, [ -sm ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    });
+    if (!voidPolys.length) {
+        return undefined;
+    }
+    // material remaining at this plane inside the clip
+    let mat = [];
+    POLY.subtract(clipBase, voidPolys, mat, undefined, z, 0.01);
+    if (!mat.length) {
+        return undefined;
+    }
+    let forb = POLY.offset(shadow, [ R + L + ts_eps ], { count: 1, flat: true, z, ...offopt, minArea: 0.01 });
+    let safe = [];
+    POLY.subtract(reach, forb, safe, undefined, z, 0.01);
+    if (!safe.length) {
+        return undefined;
+    }
+
+    // sweep a ring fragment (open or closed) by the tool radius into the
+    // region its disk would touch
+    const sweepOf = (frag) => {
+        if (frag.open) {
+            return frag.clone(true).offset_open(R, 'round');
+        }
+        return POLY.offset([ frag ], [ R ], { count: 1, flat: true, z, ...offopt, minArea: 0 });
+    };
+
+    // family rings anchored on the verified-void boundary. cumulative
+    // offset c starts at -(R - S): the first ring's axis sits R - S
+    // beyond the free edge (over verified void) so its disk engages S of
+    // fresh material, then advances by S toward the occupied wall
+    let rings = [];
+    let removed = []; // swept fresh material of emitted rings so far
+    let minEng = S * S * 0.001; // ~zero fresh-material threshold
+    let c = S - R;
+    for (let k = 0; k < steps; k++, c += S) {
+        let raw = POLY.offset(voidPolys, [ c ], { count: 1, flat: true, z, ...offopt });
+        if (!raw.length) {
+            break;
+        }
+        // keep only the path inside the safe axis zone (drops wall-side
+        // violations and out-of-reach wander; may split rings into open
+        // fragments, which the emitter handles like any open polyline)
+        let frags = [];
+        for (let r of raw) {
+            let cut = r.cut(safe, true);
+            if (cut) frags.appendAll(cut);
+        }
+        if (!frags.length) {
+            break;
+        }
+        // fresh-material engagement: sweep the fragments by the tool
+        // radius, intersect (region ∩ region via mask) with remaining
+        // material, drop already-cut. mask/subtract results overlap, so
+        // every stage is unioned first: POLY.subtract runs even-odd, and
+        // overlapping input regions would punch phantom holes into the
+        // result instead of merging
+        let fresh = [];
+        for (let frag of frags) {
+            for (let sw of sweepOf(frag)) {
+                for (let m of mat) {
+                    let hit = sw.mask(m);
+                    if (hit) fresh.appendAll(hit);
+                }
+            }
+        }
+        fresh = POLY.union(fresh, 0.00001, true);
+        if (!fresh.length) {
+            break;
+        }
+        let eng = [];
+        if (removed.length) {
+            POLY.subtract(fresh, removed, eng, undefined, z, 0);
+        } else {
+            eng = fresh;
+        }
+        let engA = eng.reduce((a, p) => a + p.areaDeep(), 0);
+        if (engA < minEng) {
+            break;
+        }
+        // record the full sweep over material (not just the fresh part):
+        // later rings must not re-count material this ring already removes
+        removed = removed.length ? POLY.union([ ...removed, ...fresh ], 0.00001, true) : fresh;
+        rings.appendAll(frags);
+    }
+    if (!rings.length) {
+        return undefined;
+    }
+
+    // wall-anchored finishing ring(s), generated from the working clip
+    // exactly as the legacy progression anchors them
+    let wall = POLY.offset(clip, [ firstOff ], { count: 1, flat: true, z, ...offopt });
+    if (finishCut) {
+        wall.appendAll(POLY.offset(clip, [ firstOff - finishCut ], { count: 1, flat: true, z, ...offopt }));
+    }
+
+    // coverage net: the family plus wall rings must leave no significant
+    // material behind (the legacy progression always covers the clip);
+    // otherwise defer to the legacy rings. union before subtract (even-odd
+    // overlap hazard, see engagement comment above)
+    let cov = [];
+    for (let w of wall) {
+        for (let sw of sweepOf(w)) {
+            for (let m of mat) {
+                let hit = sw.mask(m);
+                if (hit) cov.appendAll(hit);
+            }
+        }
+    }
+    cov.appendAll(removed);
+    cov = POLY.union(cov, 0.00001, true);
+    let uncut = [];
+    POLY.subtract(mat, cov, uncut, undefined, z, 0);
+    // material within R + L of the shadow is the intentional leave shell —
+    // neither the generated set nor the legacy progression may touch it —
+    // so only uncut material outside that zone counts against coverage
+    // (forb is exactly that zone, computed above)
+    if (forb.length) {
+        let bad = [];
+        POLY.subtract(uncut, forb, bad, undefined, z, 0);
+        uncut = bad;
+    }
+    let uncutA = uncut.reduce((a, p) => a + p.areaDeep(), 0);
+    if (uncutA > S * S * 0.25) {
+        return undefined;
+    }
+
+    return [ ...rings, ...wall ];
 }
 
 function omitOuter(polys) {
