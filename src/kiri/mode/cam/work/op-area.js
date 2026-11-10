@@ -1320,7 +1320,7 @@ function freeAnchorRings(ctx) {
     });
     voidPolys = POLY.offset(voidPolys, [ -sm ], {
         count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
-    });
+    }) ?? [];
     if (!voidPolys.length) {
         return undefined;
     }
@@ -1330,7 +1330,9 @@ function freeAnchorRings(ctx) {
     if (!mat.length) {
         return undefined;
     }
-    let forb = POLY.offset(shadow, [ R + L + ts_eps ], { count: 1, flat: true, z, ...offopt, minArea: 0.01 });
+    // flat:true offsets return undefined (not []) when they produce no
+    // polygons, so coalesce to an empty array before use
+    let forb = POLY.offset(shadow, [ R + L + ts_eps ], { count: 1, flat: true, z, ...offopt, minArea: 0.01 }) ?? [];
     let safe = [];
     POLY.subtract(reach, forb, safe, undefined, z, 0.01);
     if (!safe.length) {
@@ -1355,7 +1357,7 @@ function freeAnchorRings(ctx) {
     let minEng = S * S * 0.001; // ~zero fresh-material threshold
     let c = S - R;
     for (let k = 0; k < steps; k++, c += S) {
-        let raw = POLY.offset(voidPolys, [ c ], { count: 1, flat: true, z, ...offopt });
+        let raw = POLY.offset(voidPolys, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
         if (!raw.length) {
             break;
         }
@@ -1410,7 +1412,7 @@ function freeAnchorRings(ctx) {
 
     // wall-anchored finishing ring(s), generated from the working clip
     // exactly as the legacy progression anchors them
-    let wall = POLY.offset(clip, [ firstOff ], { count: 1, flat: true, z, ...offopt });
+    let wall = POLY.offset(clip, [ firstOff ], { count: 1, flat: true, z, ...offopt }) ?? [];
     if (finishCut) {
         wall.appendAll(POLY.offset(clip, [ firstOff - finishCut ], { count: 1, flat: true, z, ...offopt }));
     }
