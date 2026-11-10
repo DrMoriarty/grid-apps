@@ -45,6 +45,10 @@ export function cam_slice_pre(settings) {
 export async function cam_slice(settings, widget, onupdate, ondone) {
     if (widget.track.synth) return ondone();
 
+    // wait for the wasm clipper if it's still loading (see cam_slice_pre)
+    // so shadow unions/offsets use it from the first slice onward
+    await wasm_ctrl.ready();
+
     // get tab widgets for this specific widget
     let tabW = widget.group.filter(w => w != widget && w.track.tabOwner === widget.id);
 

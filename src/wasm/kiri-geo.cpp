@@ -101,7 +101,9 @@ Uint32 poly_offset(Uint32 memat, Uint32 polys, float offset, float clean, Uint8 
 
     if (simple > 0) {
         Paths simples;
-        SimplifyPolygons(ins, simples);
+        // non-zero to match the JS offset path (polygons.js passes
+        // FillNonZero); clipper defaults to even-odd here
+        SimplifyPolygons(ins, simples, pftNonZero);
         ins = simples;
     }
 
@@ -130,7 +132,11 @@ Uint32 poly_union(Uint32 memat, Uint32 polys, float offset) {
 
     Clipper clip;
     clip.AddPaths(ins, ptSubject, true);
-    clip.Execute(ctUnion, outs);
+    // fill types must be explicit: clipper defaults to even-odd which turns
+    // overlaps between same-winding outers into holes. inputs arrive with
+    // outers clockwise and inners counter-clockwise (see writePoly in
+    // geo/wasm.js) so non-zero yields a proper union
+    clip.Execute(ctUnion, outs, pftNonZero, pftNonZero);
 
     Uint32 resat = pos;
 

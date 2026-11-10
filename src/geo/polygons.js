@@ -733,7 +733,9 @@ export function offset(polys, dist, opts = {}) {
 
     if (opts.wasm && geo.wasm && join === JoinType.jtMiter && fill === FillNonZero && type === EndType.etClosedPolygon) {
         try {
-            polys = geo.wasm.js.offset(polys, offs, zed, clean ? config.clipperClean : 0, simple ? 1 : 0);
+            // wasm glue does its own deep nesting; pass minArea so it applies
+            // the same tiny-polygon filter the JS path does
+            polys = geo.wasm.js.offset(polys, offs, zed, clean ? config.clipperClean : 0, simple ? 1 : 0, mina);
             if (open.length) polys.appendAll(open);
         } catch (e) {
             console.log('wasm error', e.message || e);
