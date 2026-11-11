@@ -1441,13 +1441,17 @@ function simplifyPolys(polys, tol) {
  *     R + leave (axis space), i.e. the boundary of the forbidden axis
  *     zone, with the finish_cut variant dilated further — are appended
  *     last, so the wall gets a light finishing pass even on narrow
- *     shelves where a clip-anchored (legacy firstOff) ring would collapse
+ *     shelves where a clip-anchored (legacy firstOff) ring would collapse;
+ *     they are clipped to the op clip (`clipBase`), never to `safe`
+ *     (coincident-edge kill) or `reach` (lets the disk wander R beyond
+ *     the working area on outer walls)
  *
- * Every candidate ring is constrained twice before emission:
- *   - intersected with the "safe" axis zone = tool reach of the clip
- *     (clip dilated by R) minus the shadow dilated by R + leave, so no
- *     axis point ever sits closer than R + leave to material above the
- *     cut plane, and no ring wanders outside the op's reach;
+ * Every candidate ring is constrained before emission:
+ *   - family rings are intersected with the "safe" axis zone = tool
+ *     reach of the clip (clip dilated by R) minus the shadow dilated by
+ *     R + leave, so no axis point ever sits closer than R + leave to
+ *     material above the cut plane, and no ring wanders outside the
+ *     op's reach; wall rings are clipped to the op clip itself;
  *   - engagement-checked against the remaining material (`mat` = clip
  *     minus verified void): a ring whose disk removes no fresh material
  *     ends the family instead of being emitted as an idle pass.
@@ -1648,19 +1652,27 @@ function freeAnchorRings(ctx) {
     // by `safe`: the safe boundary sits a ts_eps deeper than the ring
     // contour (both are offsets of the same shadow), so clipping on the
     // coinciding edges kills the whole ring. the ring leaves L at the
-    // wall by construction, so `reach` is the only bound it needs:
-    // segments outside the op's reach (shadow near the clip boundary) are
-    // trimmed rather than wandering outside the working area
+    // wall by construction, so the working zone of the axis is the op
+    // clip itself (`clipBase`), not `reach`: clipping on `reach` (clip
+    // dilated by R) leaves the ring untouched wherever the shadow sits
+    // near the clip boundary, letting the disk sweep up to R beyond the
+    // op's working area (see #2a1a05fa follow-up: rough inside-only
+    // flats aligned outside the part). inside the clip, the ring sits
+    // R + L off the wall contour, so the clip edge cannot coincide with
+    // it and the ts_eps kill does not apply; segments beyond the clip
+    // (outer walls, outside-only rough) are trimmed into nothing, and if
+    // the coverage net then fails, the caller falls back to the legacy
+    // rings — conservative, as before the free-anchor feature
     let wall = [];
     for (let w of POLY.offset(shadow, [ R + L ], { count: 1, flat: true, z, ...offopt }) ?? []) {
-        let cut = w.cut(reach, true);
+        let cut = w.cut(clipBase, true);
         if (cut) wall.appendAll(cut);
     }
     if (finishCut) {
         // legacy finish_cut pass sits finishCut deeper into the material
         // than the wall ring; same anchor, dilated accordingly
         for (let w of POLY.offset(shadow, [ R + L + finishCut ], { count: 1, flat: true, z, ...offopt }) ?? []) {
-            let cut = w.cut(reach, true);
+            let cut = w.cut(clipBase, true);
             if (cut) wall.appendAll(cut);
         }
     }
