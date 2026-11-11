@@ -1709,6 +1709,22 @@ function freeAnchorRings(ctx) {
         POLY.subtract(uncut, leave, bad, undefined, z, 0);
         uncut = bad;
     }
+    // the stock model's cleared test is per-cell (all 4 corner nodes at or
+    // below the plane), so cells straddling a cleared/material boundary
+    // never verify as cleared and `mat` carries a phantom sliver up to one
+    // grid cell wide along every free edge. along the part outline no
+    // legal tool axis exists (wall standoff), so that sliver is not
+    // machinable by the generated set -- yet it is indistinguishable from
+    // the cut side of the same quantization boundary. forgive uncut
+    // material within one grid cell of the verified void; anything wider
+    // or deeper still fails the net and defers to the legacy rings
+    let vquiet = POLY.offset(voidPolys, [ stockModel.resolution + ts_eps ],
+        { count: 1, flat: true, z, ...offopt, minArea: 0.01 }) ?? [];
+    if (vquiet.length) {
+        let bad = [];
+        POLY.subtract(uncut, vquiet, bad, undefined, z, 0);
+        uncut = bad;
+    }
     let uncutA = uncut.reduce((a, p) => a + p.areaDeep(), 0);
     if (uncutA > S * S * 0.25) {
         return undefined;
