@@ -344,24 +344,33 @@ class OpArea extends CamOp {
                     // full-engagement pass and later rings ride over
                     // verified void. when the model is present and valid,
                     // replace the ring set with one anchored on the
-                    // verified-void boundary: ring 1 hangs (R - S) beyond
+                    // free-edge boundary: ring 1 hangs (R - S) beyond
                     // the free edge over model-verified air, rings advance
                     // by the stepover S toward the occupied wall, and the
                     // wall-anchored ring(s) are appended last as a light
-                    // finishing pass. falls through to the legacy rings
-                    // above when the model is missing/invalid (rotary
-                    // work), in spiral mode, or when the regenerated set
-                    // would leave material uncovered (see freeAnchorRings)
+                    // finishing pass. when the free edge borders a model
+                    // cavity (verified against the matrix), the anchor is
+                    // the smooth model contour of that cavity wall — no
+                    // pixel wiggle; otherwise the pixel (heightmap strip)
+                    // anchoring applies unchanged. falls through to the
+                    // legacy rings above when the model is missing/invalid
+                    // (rotary work), in spiral mode, or when the
+                    // regenerated set would leave material uncovered
+                    // (see freeAnchorRings)
                     if (!didSpiral && !op.ignore && !op.walls &&
                         state.stockModel?.valid &&
                         toolOver < toolDiam / 2 - ts_eps
                     ) {
-                        let alt = freeAnchorRings({
+                        // async: may slice the mesh just below the cut
+                        // plane for model-true free-edge contours (cached
+                        // per z by the widget)
+                        let alt = await freeAnchorRings({
                             stockModel: state.stockModel,
                             clip,
                             clipBase: clipFull ?? clip,
                             shadow,
                             tipz,
+                            cutz: z - zMov,
                             z: z - zMov,
                             R: toolDiam / 2,
                             L: op.leave_xy ?? 0,
@@ -369,7 +378,8 @@ class OpArea extends CamOp {
                             firstOff,
                             finishCut: finish_cut,
                             offopt,
-                            steps: op.steps ?? 999
+                            steps: op.steps ?? 999,
+                            shadowAt
                         });
                         if (alt) outs = alt;
                     }
@@ -1242,7 +1252,7 @@ function stitchRegion(levels, opts) {
  * Douglas-Peucker polyline simplification with collinear-point merge.
  *
  * Used to de-staircase the stock model's heightmap-derived void boundary:
- * the morphological close in freeAnchorRings removes most of the grid
+ * the morphological close in smoothPixelVoid removes most of the grid
  * staircase but leaves a residue of ~0.25 * resolution amplitude, which
  * every offset ring of the family inherits (and amplifies, since each
  * ring is an offset of the previous boundary). DP with a sub-cell
@@ -1417,6 +1427,178 @@ function simplifyPolys(polys, tol) {
 }
 
 /**
+ * Intersect two polygon sets via a single clipper pass (region ∩ region).
+ * Even-odd fill ignores winding but not overlap: inputs must not
+ * self-overlap within a set (callers pass unioned/merged sets).
+ */
+function intersectPolys(setA, setB, z) {
+    if (!setA.length || !setB.length) {
+        return [];
+    }
+    let clip = new clib.Clipper(),
+        tree = new clib.PolyTree();
+    clip.AddPaths(setA.flatMap(p => p.toClipper()), ptyp.ptSubject, true);
+    clip.AddPaths(setB.flatMap(p => p.toClipper()), ptyp.ptClip, true);
+    clip.Execute(ctyp.ctIntersection, tree, cfil.pftEvenOdd, cfil.pftEvenOdd);
+    return POLY.fromClipperTreeUnion(tree, z, 0.01);
+}
+
+/**
+ * De-staircase raw cleared-cell strips for pixel (matrix) anchoring of the
+ * ring family: morphological close of one grid cell radius (round joins
+ * avoid miter spikes), then sub-cell Douglas-Peucker simplification with
+ * collinear merge (see simplifyPoints). Removes most of the grid
+ * staircase but leaves a residue of ~0.25 * resolution amplitude — which
+ * is why model-true contours are preferred wherever they verify (see
+ * modelFreeEdgeAnchor).
+ */
+function smoothPixelVoid(polys, z, resolution) {
+    const sm = Math.max(resolution, 0.01);
+    // fresh opts object per call: POLY.offset accumulates into opts.outs,
+    // so a shared object would concatenate the dilate and erode results
+    polys = POLY.offset(polys, [ sm ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    });
+    polys = POLY.offset(polys ?? [], [ -sm ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    }) ?? [];
+    if (!polys.length) {
+        return [];
+    }
+    const tol = Math.max(0.05, 0.25 * resolution);
+    return simplifyPolys(polys, tol);
+}
+
+/**
+ * Model-anchored free-edge contours for freeAnchorRings.
+ *
+ * When a clip's free edge borders a cavity that exists in the model (a
+ * ledge overhanging a roughed pocket — the typical alignment target), the
+ * smooth model contour of that edge is available directly: a mesh slice
+ * just below the cut plane (`shadowAt(cutz - eps)`) cross-sections the
+ * cavity, and the inner boundaries of that cross-section are the cavity
+ * walls — as smooth as the model's own surfaces, unlike the pixelated
+ * strip boundary the rings otherwise anchor to.
+ *
+ * A hole qualifies as a free-edge contour only when the stock removal
+ * model verifies the void it encloses down to the cut plane: the heightmap
+ * must show no material rising above the tip plane inside the contour
+ * (inset by one grid cell to forgive wall-straddling cell quantization).
+ * An unverified hole (under-roughed cavity the rings would hang their
+ * axes over) rejects the model anchor for the whole plane — the caller
+ * falls back to pixel anchoring, which never trusts model-true contours.
+ *
+ * Void the matrix verifies beyond the model contours (air created by the
+ * passes themselves rather than by model geometry, e.g. facing near the
+ * stock top) is returned merged in, de-staircased with the pixel path, so
+ * those free edges keep smoothed anchoring while the model contours stay
+ * exact.
+ *
+ * @param {Object} ctx
+ * @param {Function} ctx.shadowAt async widget shadow query (cached per z)
+ * @param {number} ctx.cutz world z of the actual cut plane (no flatOff)
+ * @param {Polygon[]} ctx.reach tool-reach zone voidPolys were gathered in
+ * @param {Polygon[]} ctx.voidPolys raw (un-smoothed) verified void regions
+ * @param {number} ctx.z world z for generated anchor polys
+ * @param {number} ctx.resolution stock heightmap grid resolution
+ * @returns {Promise<Polygon[]|undefined>} anchor regions, or undefined to
+ *   fall back to pixel anchoring
+ */
+async function modelFreeEdgeAnchor(ctx) {
+    const { shadowAt, cutz, reach, voidPolys, z, resolution } = ctx;
+
+    // slice the mesh just below the cut plane: inner boundaries of the
+    // cross-section are walls of cavities existing in the model at this
+    // depth. shadowAt caches per z and must not be mutated: clone holes
+    // before any winding fix-up
+    let below = await shadowAt(cutz - 0.01);
+    let holes = [];
+    for (let poly of below) {
+        if (!poly.inner?.length) {
+            continue;
+        }
+        for (let hole of poly.inner) {
+            // the clipper tree guarantees hole winding opposite its parent
+            // outer; normalize to the outer winding so POLY.offset treats
+            // the hole like any void REGION (positive offset dilates into
+            // material, matching the pixel-void offset semantics). inner
+            // windings are re-fixed by POLY.offset itself
+            let hc = hole.clone(true);
+            if (hc.isClockwise() === poly.isClockwise()) {
+                hc.reverse();
+            }
+            holes.push(hc);
+        }
+    }
+    if (!holes.length) {
+        return undefined;
+    }
+    // candidates: model cavities the verified void actually overlaps — a
+    // free edge of this clip can only border verified void, so untouched
+    // cavities elsewhere in the area are not anchors (and not failures)
+    let candidates = [];
+    for (let hole of holes) {
+        let ov = intersectPolys([ hole ], voidPolys, z);
+        let ovA = ov.reduce((a, p) => a + p.areaDeep(), 0);
+        if (ovA > 0.25 * resolution * resolution) {
+            candidates.push(hole);
+        }
+    }
+    if (!candidates.length) {
+        return undefined;
+    }
+    // verification: within the model contour (clipped to the reach, where
+    // the matrix carries data, and inset one grid cell to forgive
+    // wall-straddling cell quantization) the matrix must verify void down
+    // to the tip plane. unverified material inside the contour — stock the
+    // rings would hang axes over or face at full depth — rejects the model
+    // anchor for this plane (conservative rollback to pixel anchoring)
+    let verified = [];
+    for (let hole of candidates) {
+        let hr = intersectPolys([ hole ], reach, z);
+        if (!hr.length) {
+            continue;
+        }
+        let hin = POLY.offset(hr, [ -(resolution + ts_eps) ], {
+            count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+        }) ?? [];
+        if (!hin.length) {
+            continue;
+        }
+        let rem = [];
+        POLY.subtract(hin, voidPolys, rem, undefined, z, 0);
+        let remA = rem.reduce((a, p) => a + p.areaDeep(), 0);
+        if (remA > 0.05) {
+            return undefined;
+        }
+        verified.appendAll(hr);
+    }
+    if (!verified.length) {
+        return undefined;
+    }
+    // void beyond the model contours keeps pixel anchoring: dilate the
+    // verified contours past heightmap quantization, take the matrix void
+    // outside them, and de-staircase that residual only
+    let holesBig = POLY.offset(verified, [ resolution + ts_eps ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    }) ?? [];
+    let residual = [];
+    POLY.subtract(voidPolys, holesBig, residual, undefined, z, 0);
+    if (!residual.length) {
+        // pure model anchoring: rings are offsets of exact model contours
+        return verified;
+    }
+    let smooth = smoothPixelVoid(residual, z, resolution);
+    if (!smooth.length) {
+        return verified;
+    }
+    // union before merge (even-odd overlap hazard): the model contours and
+    // the de-staircased residual may touch where the cavity opens into
+    // pass-created air
+    return POLY.union([ ...verified, ...smooth ], 0.00001, true);
+}
+
+/**
  * Void-anchored clearing ring generation (free-edge first machining).
  *
  * Distinguishes the two kinds of edges a clear-mode clip can have:
@@ -1457,11 +1639,23 @@ function simplifyPolys(polys, tol) {
  *     ends the family instead of being emitted as an idle pass.
  *
  * The stock model's cleared-cell strips are a pixelated (heightmap grid)
- * approximation of the void, so they are unioned and closed (dilate +
- * erode by one grid cell) before use — this de-staircases the free-edge
- * contours the rings anchor to without moving the boundary outward.
- * Undercounted void (conservative corner test in clearedRegion) only
- * shrinks the allowed overhang, never extends it.
+ * approximation of the void. They serve two distinct roles here:
+ *
+ *   - ANCHOR for the family rings. When the free edge borders a cavity
+ *     that exists in the model (a ledge overhanging a roughed pocket),
+ *     the exact smooth model contour of that edge is used instead (see
+ *     modelFreeEdgeAnchor): rings become offsets of the model contour and
+ *     carry no pixel wiggle. Only when no model contour verifies does the
+ *     pixel path anchor the rings: strips are unioned and closed (dilate
+ *     + erode by one grid cell) to de-staircase the free-edge boundary
+ *     without moving it outward, leaving a residual ~0.25 * resolution
+ *     wave (see smoothPixelVoid). Undercounted void (conservative corner
+ *     test in clearedRegion) only shrinks the allowed overhang, never
+ *     extends it.
+ *   - VERIFICATION and honesty: `mat` (remaining material), the
+ *     engagement checks and the coverage net are always computed against
+ *     the raw strip union — the matrix is never smoothed up to excuse
+ *     uncut material.
  *
  * A coverage net guards against pathological geometry: when the
  * generated set (family + wall rings) leaves more material uncut than a
@@ -1474,6 +1668,7 @@ function simplifyPolys(polys, tol) {
  * @param {Polygon[]} ctx.clipBase full clip before reduction (or clip)
  * @param {Polygon[]} ctx.shadow part cross-section at the cut plane
  * @param {number} ctx.tipz effective tip plane for model queries
+ * @param {number} ctx.cutz world z of the actual cut plane (no flatOff)
  * @param {number} ctx.z world z for generated path polys
  * @param {number} ctx.R tool radius (flute diameter / 2)
  * @param {number} ctx.L leave_xy wall allowance
@@ -1482,11 +1677,12 @@ function simplifyPolys(polys, tol) {
  * @param {number} ctx.finishCut legacy finish_cut offset (0 = none)
  * @param {Object} ctx.offopt shared POLY.offset options
  * @param {number} ctx.steps ring count cap (op.steps)
- * @returns {Polygon[]|undefined} replacement ring set, or undefined to
- *   keep the legacy rings
+ * @param {Function} ctx.shadowAt async widget shadow query (cached per z)
+ * @returns {Promise<Polygon[]|undefined>} replacement ring set, or
+ *   undefined to keep the legacy rings
  */
-function freeAnchorRings(ctx) {
-    const { stockModel, clip, clipBase, shadow, tipz, z, R, L, S, firstOff, finishCut, offopt, steps } = ctx;
+async function freeAnchorRings(ctx) {
+    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt } = ctx;
 
     // axis-safe zone: within tool reach of the clip, clear of the shadow
     // dilated by the tool radius + wall allowance
@@ -1496,51 +1692,54 @@ function freeAnchorRings(ctx) {
     }
     // verified void within reach: heightmap cells swept to/below this
     // op's tip plane by prior operations
-    let voidPolys = stockModel.clearedRegion(reach, tipz);
-    if (!voidPolys.length) {
+    let voidRaw = stockModel.clearedRegion(reach, tipz);
+    if (!voidRaw.length) {
         return undefined;
     }
-    // union the strips before closing: the raw strip list is one rect per
-    // grid-row run (thousands of rects over a cleared cavity) and
-    // ClipperOffset processes every input path independently, so offsetting
-    // the merged (perimeter-only) contour set is much cheaper. exact:
-    // offset(A u B, d) = offset(A, d) u offset(B, d). single clipper pass:
-    // pairwise POLY.union is quadratic in the strip count
+    // union the strips before further use: the raw strip list is one rect
+    // per grid-row run (thousands of rects over a cleared cavity) and
+    // ClipperOffset processes every input path independently, so any
+    // offsetting of the merged (perimeter-only) contour set is much
+    // cheaper. exact: offset(A u B, d) = offset(A, d) u offset(B, d).
+    // single clipper pass: pairwise POLY.union is quadratic in strip count
     let cuni = new clib.Clipper(),
         ctree = new clib.PolyTree();
-    cuni.AddPaths(voidPolys.flatMap(p => p.toClipper()), ptyp.ptSubject, true);
+    cuni.AddPaths(voidRaw.flatMap(p => p.toClipper()), ptyp.ptSubject, true);
     cuni.Execute(ctyp.ctUnion, ctree, cfil.pftEvenOdd, cfil.pftEvenOdd);
-    voidPolys = POLY.fromClipperTreeUnion(ctree, z, 0.01);
-    // de-staircase the strip union (see docblock) with a morphological
-    // close of one grid cell radius; round joins avoid miter spikes.
-    // fresh opts object per call: POLY.offset accumulates into opts.outs,
-    // so a shared object would concatenate the dilate and erode results
-    let sm = Math.max(stockModel.resolution, 0.01);
-    voidPolys = POLY.offset(voidPolys, [ sm ], {
-        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    let voidPolys = POLY.fromClipperTreeUnion(ctree, z, 0.01);
+    if (!voidPolys.length) {
+        return undefined;
+    }
+    // ring anchor selection. model-true free-edge contours (mesh slice
+    // just below the cut plane, verified against the matrix) take
+    // precedence: rings anchored on them carry no pixel wiggle, and the
+    // pixel de-staircase (union close + DP) is skipped entirely. voidMat
+    // stays the raw strip union in that case: mat/engagement/coverage
+    // below are computed against the un-smoothed matrix, so the generated
+    // set is never excused by smoothing
+    let anchor, voidMat;
+    let modelAnchor = await modelFreeEdgeAnchor({
+        shadowAt, cutz, reach, voidPolys, z, resolution: stockModel.resolution
     });
-    voidPolys = POLY.offset(voidPolys, [ -sm ], {
-        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
-    }) ?? [];
-    if (!voidPolys.length) {
-        return undefined;
+    if (modelAnchor) {
+        anchor = modelAnchor;
+        voidMat = voidPolys;
+    } else {
+        // de-staircase the strip union for anchoring (see docblock):
+        // morphological close of one grid cell + sub-cell DP simplify.
+        // the smoothed void may extend the raw void by at most tol;
+        // mat/engagement/coverage below are all computed from these same
+        // smoothed contours, so they stay consistent
+        voidPolys = smoothPixelVoid(voidPolys, z, stockModel.resolution);
+        if (!voidPolys.length) {
+            return undefined;
+        }
+        anchor = voidMat = voidPolys;
     }
-    // the close removes most of the grid staircase but leaves a residue
-    // of ~0.25 * resolution amplitude on the free-edge boundary — and
-    // every ring of the family is an offset of that boundary, so the
-    // wiggle would persist (and compound) in the emitted paths. simplify
-    // the contour with a sub-cell Douglas-Peucker tolerance + collinear
-    // merge (see simplifyPoints). the smoothed void may extend the raw
-    // void by at most tol; mat/engagement/coverage below are all computed
-    // from these same smoothed contours, so they stay consistent
     const tol = Math.max(0.05, 0.25 * stockModel.resolution);
-    voidPolys = simplifyPolys(voidPolys, tol);
-    if (!voidPolys.length) {
-        return undefined;
-    }
     // material remaining at this plane inside the clip
     let mat = [];
-    POLY.subtract(clipBase, voidPolys, mat, undefined, z, 0.01);
+    POLY.subtract(clipBase, voidMat, mat, undefined, z, 0.01);
     if (!mat.length) {
         return undefined;
     }
@@ -1562,16 +1761,18 @@ function freeAnchorRings(ctx) {
         return POLY.offset([ frag ], [ R ], { count: 1, flat: true, z, ...offopt, minArea: 0 });
     };
 
-    // family rings anchored on the verified-void boundary. cumulative
-    // offset c starts at -(R - S): the first ring's axis sits R - S
-    // beyond the free edge (over verified void) so its disk engages S of
-    // fresh material, then advances by S toward the occupied wall
+    // family rings anchored on the selected free-edge boundary (smooth
+    // model contours when they verified, de-staircased pixel boundary
+    // otherwise). cumulative offset c starts at -(R - S): the first
+    // ring's axis sits R - S beyond the free edge (over verified void) so
+    // its disk engages S of fresh material, then advances by S toward the
+    // occupied wall
     let rings = [];
     let removed = []; // swept fresh material of emitted rings so far
     let minEng = S * S * 0.001; // ~zero fresh-material threshold
     let c = S - R;
     for (let k = 0; k < steps; k++, c += S) {
-        let raw = POLY.offset(voidPolys, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
+        let raw = POLY.offset(anchor, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
         if (!raw.length) {
             break;
         }
@@ -1716,9 +1917,11 @@ function freeAnchorRings(ctx) {
     // legal tool axis exists (wall standoff), so that sliver is not
     // machinable by the generated set -- yet it is indistinguishable from
     // the cut side of the same quantization boundary. forgive uncut
-    // material within one grid cell of the verified void; anything wider
-    // or deeper still fails the net and defers to the legacy rings
-    let vquiet = POLY.offset(voidPolys, [ stockModel.resolution + ts_eps ],
+    // material within one grid cell of the verified void (the raw matrix
+    // union when the model anchor holds — its boundary sits within one
+    // cell of the anchor anyway); anything wider or deeper still fails
+    // the net and defers to the legacy rings
+    let vquiet = POLY.offset(voidMat, [ stockModel.resolution + ts_eps ],
         { count: 1, flat: true, z, ...offopt, minArea: 0.01 }) ?? [];
     if (vquiet.length) {
         let bad = [];
