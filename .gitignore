@@ -29,3 +29,4 @@ __pycache__
 .drcode/search_index.json
 .drcode/stats.json
 .drcode/pending_notifications.json
+.drcode/goals/*.state.json
