@@ -1644,21 +1644,23 @@ function freeAnchorRings(ctx) {
     // local material width is <= 2 * (R + L) — a narrow shelf left
     // un-aligned at its closed edge (see #703ee573: 8mm shelf, Ø8 tool,
     // L=0). the shadow-dilated contour exists for any geometry, its tool
-    // disk reaches to within L of the wall, and because it coincides with
-    // the safe-zone boundary the family fragments cut by `safe` join it
-    // without gaps. clipped to the safe zone like any family ring, so
+    // disk reaches to within L of the wall. the ring must NOT be clipped
+    // by `safe`: the safe boundary sits a ts_eps deeper than the ring
+    // contour (both are offsets of the same shadow), so clipping on the
+    // coinciding edges kills the whole ring. the ring leaves L at the
+    // wall by construction, so `reach` is the only bound it needs:
     // segments outside the op's reach (shadow near the clip boundary) are
     // trimmed rather than wandering outside the working area
     let wall = [];
     for (let w of POLY.offset(shadow, [ R + L ], { count: 1, flat: true, z, ...offopt }) ?? []) {
-        let cut = w.cut(safe, true);
+        let cut = w.cut(reach, true);
         if (cut) wall.appendAll(cut);
     }
     if (finishCut) {
         // legacy finish_cut pass sits finishCut deeper into the material
         // than the wall ring; same anchor, dilated accordingly
         for (let w of POLY.offset(shadow, [ R + L + finishCut ], { count: 1, flat: true, z, ...offopt }) ?? []) {
-            let cut = w.cut(safe, true);
+            let cut = w.cut(reach, true);
             if (cut) wall.appendAll(cut);
         }
     }
