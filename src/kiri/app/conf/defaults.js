@@ -1007,6 +1007,9 @@ export const conf = {
             showSpeeds: true,
             spaceLayout: 1,
             spaceRandoX: false,
+            // stock removal model grid resolution in mm (0 = auto:
+            // proportional to smallest sweep tool, clamped + size-capped)
+            stockRes: 0,
             threaded: true,
             units: "mm",
             view: null,

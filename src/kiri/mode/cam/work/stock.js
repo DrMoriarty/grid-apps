@@ -50,14 +50,34 @@ const EPS = 1e-6;
 // within this margin counts as already swept
 const CLEAR_EPS = 0.001;
 
+// op types whose sweeps are folded into the stock model (see
+// recordAreaSweep): their tool footprints define the finest detail the
+// grid must resolve, so only these ops' tools drive auto-resolution
+const SWEEP_OPS = new Set(['rough', 'outline', 'trace', 'pocket', 'contour']);
+
+// hybrid auto-resolution clamp bounds (mm per grid cell). lower bound
+// keeps stamp footprints at a few pixels for sub-1mm tools (they ride
+// the clamp and record coarser sweeps than their diameter); upper bound
+// keeps stamps of large tools from covering huge swaths of nothing
+const STOCK_RES_MIN = 0.2;
+const STOCK_RES_MAX = 1.0;
+// fallback when no sweep op has a usable tool (empty/disabled op list)
+const STOCK_RES_DEFAULT = 0.5;
+// size cap: auto-resolution is coarsened so neither lattice axis exceeds
+// this many nodes, bounding heightmap memory and #strike cost on big stocks
+const STOCK_STEPS_MAX = 800;
+
 export class StockModel {
 
     /**
      * @param {Object} opt
      * @param {Widget} opt.widget owning widget (for cache attachment by caller)
      * @param {Object} opt.bounds widget bounding box {min:{x,y,z}, max:{x,y,z}}
+     * @param {number} [opt.resolution] grid resolution in mm; takes precedence
+     *   over every other source (computed by `stockResolution()` for getStockModel)
      * @param {number} [opt.tolerance] grid resolution in mm; when 0/undefined
-     *   derived from animation mesh density using the topo3.js:46 formula
+     *   and no opt.resolution, derived from animation mesh density using the
+     *   topo3.js:46 formula (legacy path, kept for direct constructions)
      * @param {number} opt.stockTop world z of the stock top surface
      * @param {number} [opt.stockBottom] world z of the stock bottom surface
      * @param {string} [opt.fingerprint] cache validity fingerprint
@@ -68,11 +88,15 @@ export class StockModel {
         const boundsY = bounds.max.y - bounds.min.y;
         const tolerance = opt.tolerance > 0 ? opt.tolerance : 0;
 
-        // same auto-resolution formula as topo3.js:46 (animesh = 100 * 2500)
+        // resolution source precedence: explicit opt.resolution (decoupled
+        // from animesh, see stockResolution), then tolerance, then the
+        // legacy topo3.js:46 formula (animesh = 100 * 2500)
         const animesh = parseInt(opt.animesh || 100) * 2500;
-        const resolution = (tolerance
-            ? tolerance
-            : 1 / Math.sqrt(animesh / (boundsX * boundsY))
+        const resolution = (opt.resolution > 0
+            ? opt.resolution
+            : tolerance
+                ? tolerance
+                : 1 / Math.sqrt(animesh / (boundsX * boundsY))
         ).round(5);
 
         // +1 so the node lattice covers maxX/maxY exactly
@@ -185,7 +209,7 @@ export class StockModel {
      * cover the rest). Sampling every `resolution` instead would stamp the
      * same footprint once per grid cell of travel — for stock-scale clears
      * (camRoughAll) that multiplies the work by ~tool-radius/resolution
-     * (hundreds-fold at default animesh), turning slice into a hours-long
+     * (hundreds-fold at fine grid resolutions), turning slice into a hours-long
      * freeze. The only loss is a sub-radius fringe at the outer envelope of
      * the sweep where the disc boundary scallops between stamps; those
      * cells keep the stock top, which is the safe direction for every
@@ -532,14 +556,62 @@ export function recordAreaSweep(state, type, conf, area, onProgress) {
 }
 
 /**
+ * Grid resolution (mm per cell) for the stock removal model, decoupled from
+ * `controller.animesh` (which sizes the topo/animation mesh — a much finer
+ * need than sweep recording, and quadratically expensive here).
+ *
+ * Selection order:
+ *   1. explicit `controller.stockRes` (mm/cell) when > 0 — user override;
+ *   2. hybrid auto: proportional to the smallest flute diameter among
+ *      sweep-recording ops' tools (minDia / 8, so the tool footprint spans
+ *      >= 8 grid pixels and swept bands stay gapless), clamped to
+ *      [STOCK_RES_MIN, STOCK_RES_MAX], then coarsened if needed so neither
+ *      lattice axis exceeds STOCK_STEPS_MAX nodes (size cap);
+ *   3. STOCK_RES_DEFAULT when no sweep op has a usable tool.
+ *
+ * @param {Object} settings full CAM settings
+ * @param {Object} bounds widget bounding box {min:{x,y,z}, max:{x,y,z}}
+ * @returns {number} resolution in mm per grid cell
+ */
+export function stockResolution(settings, bounds) {
+    const { process = {}, controller = {} } = settings || {};
+    const boundsX = bounds.max.x - bounds.min.x;
+    const boundsY = bounds.max.y - bounds.min.y;
+
+    // explicit user override (0/blank/undefined = auto)
+    const stockRes = parseFloat(controller.stockRes);
+    if (stockRes > 0) {
+        return stockRes.round(5);
+    }
+
+    // smallest sweep-recording tool across the (enabled) op list
+    let minDia = 0;
+    for (let op of process.ops || []) {
+        if (op.disabled || !SWEEP_OPS.has(op.type)) {
+            continue;
+        }
+        const dia = new Tool(settings, op.tool).fluteDiameter();
+        if (dia > 0 && (minDia === 0 || dia < minDia)) {
+            minDia = dia;
+        }
+    }
+
+    let res = minDia > 0 ? minDia / 8 : STOCK_RES_DEFAULT;
+    res = Math.min(STOCK_RES_MAX, Math.max(STOCK_RES_MIN, res));
+    // size cap: never let a lattice axis outgrow the node cap
+    res = Math.max(res, boundsX / STOCK_STEPS_MAX, boundsY / STOCK_STEPS_MAX);
+    return res.round(5);
+}
+
+/**
  * Cache factory: returns the widget's StockModel, creating it when absent
  * or invalidated (same pattern as widget.topo in topo3.js:61-79). The cache
- * fingerprint covers the op list, stock setup, widget bounds and grid
- * resolution source, so any settings change produces a fresh model.
+ * fingerprint covers the op list, stock setup, widget bounds and the grid
+ * resolution, so any settings change produces a fresh model.
  *
  * @param {Object} settings full CAM settings
  * @param {Widget} widget
- * @param {Object} opt { stockTop, stockBottom, tolerance?, animesh? }
+ * @param {Object} opt { stockTop, stockBottom, tolerance?, resolution? }
  * @returns {StockModel}
  */
 export function getStockModel(settings, widget, opt = {}) {
@@ -549,14 +621,25 @@ export function getStockModel(settings, widget, opt = {}) {
     const stockTop = opt.stockTop;
     const stockBottom = opt.stockBottom;
 
+    // grid resolution is decoupled from controller.animesh: explicit
+    // opt.resolution wins, otherwise controller.stockRes (mm/cell) or the
+    // hybrid auto selection scaled to the smallest sweep tool (see
+    // stockResolution)
+    const resolution = opt.resolution > 0
+        ? opt.resolution
+        : stockResolution(settings, bounds);
+
     // fingerprint: op list + stock dims + bounds + resolution inputs.
-    // any change re-creates the model (invalidation on ops/settings change)
+    // the resolved resolution is included (not just controller.stockRes)
+    // so tool-library edits that shift the auto value also invalidate;
+    // animesh is intentionally absent — it no longer feeds the grid
     const fingerprint = [
         JSON.stringify(process.ops || []),
         process.camStockX, process.camStockY, process.camStockZ, process.camStockOffset,
         bounds.min.x, bounds.min.y, bounds.max.x, bounds.max.y,
         tolerance,
-        opt.animesh ?? controller.animesh,
+        resolution,
+        controller.stockRes ?? 0,
         stockTop, stockBottom
     ].join('|');
 
@@ -569,7 +652,7 @@ export function getStockModel(settings, widget, opt = {}) {
         widget,
         bounds,
         tolerance,
-        animesh: opt.animesh ?? controller.animesh,
+        resolution,
         stockTop,
         stockBottom,
         fingerprint

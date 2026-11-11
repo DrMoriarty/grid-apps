@@ -310,6 +310,7 @@ export function init_input() {
         lineType:         newSelect(LANG.op_line_s, {title: LANG.op_line_l, action: preferences.lineTypeSave, modes:FDM}, "linetype"),
         manifold:         newBoolean(LANG.op_mani_s, preferences.booleanSave, {title: LANG.op_mani_l, modes:CAM}, "manifold"),
         animesh:          newSelect(LANG.op_anim_s, {title: LANG.op_anim_l, action: preferences.aniMeshSave, modes:CAM}, "animesh"),
+        stockRes:         newInput('stock res', {title:'stock removal model grid resolution in mm (0 = auto)', convert:toFloat, size:3, modes:CAM}),
         units:            newSelect(LANG.op_unit_s, {title: LANG.op_unit_l, action: preferences.unitsSave, modes:CAM}, "units"),
         edgeangle:        newInput(LANG.op_spoa_s, {title:LANG.op_spoa_l, convert:toFloat, size:3}),
         _____:            newGroup(LANG.lo_menu, $('prefs-lay'), {inline}),
