@@ -496,6 +496,10 @@ export async function cam_slice(settings, widget, onupdate, ondone) {
         if (stockDebug) {
             addSlices(stockDebug, false);
         }
+        console.log('stock sweeps: ' + state.stockModel.swaps
+            .filter(s => s.strikeMs !== undefined)
+            .map(s => `${s.type}[${s.seq}]=${s.strikeMs.round(1)}ms`)
+            .join(' '));
     }
 
     // reindex

@@ -44,6 +44,22 @@ const ROTARY_OPS = new Set(['index', 'lathe']);
 // bilinear boundary snap epsilon (fraction of a cell)
 const EPS = 1e-6;
 
+// coarse block-max tiling of the heightmap used for sound air-stamp
+// skipping (see #regionAir): the node lattice is tiled into
+// BLOCK_SIZE x BLOCK_SIZE blocks and `blockMax` over-approximates the
+// max data value per block, so a few dozen block reads can prove a
+// whole stamp footprint sits over air. small blocks (4x4 nodes) keep the
+// block bound tight next to material boundaries, where a coarser tile
+// would mix cleared and untouched cells and defeat skipping; power of
+// two so block index computation is a shift
+const BLOCK_SHIFT = 2;
+const BLOCK_SIZE = 1 << BLOCK_SHIFT;
+
+// profile points are bucketed by write depth (dz) for the air-skip test;
+// more distinct depths than this (continuous ball/taper profiles) collapse
+// into a single conservative group
+const AIR_GROUP_MAX = 4;
+
 // tolerance for "material top at or below tip z" comparisons in
 // clearedRegion (mm): z values converge on the same plane through
 // different lerp/add paths, so exact equality is unreliable; anything
@@ -54,6 +70,13 @@ const CLEAR_EPS = 0.001;
 // recordAreaSweep): their tool footprints define the finest detail the
 // grid must resolve, so only these ops' tools drive auto-resolution
 const SWEEP_OPS = new Set(['rough', 'outline', 'trace', 'pocket', 'contour']);
+
+// monotone-ish ms clock (workers and main thread both have performance;
+// Date.now fallback for exotic environments)
+const time_now = () =>
+    (typeof performance !== 'undefined' && performance.now)
+        ? performance.now()
+        : Date.now();
 
 // hybrid auto-resolution clamp bounds (mm per grid cell). lower bound
 // keeps stamp footprints at a few pixels for sub-1mm tools (they ride
@@ -68,6 +91,15 @@ const STOCK_RES_DEFAULT = 0.5;
 const STOCK_STEPS_MAX = 800;
 
 export class StockModel {
+
+    /**
+     * debug reference mode: when true, air-stamp skipping is disabled and
+     * every stamp runs its full footprint min-merge (the pre-skip semantics).
+     * used by soundness tests to prove the skip is byte-exact against
+     * unconditional stamping on real pipeline toolpaths.
+     * @type {boolean}
+     */
+    static naiveStamps = false;
 
     /**
      * @param {Object} opt
@@ -130,6 +162,20 @@ export class StockModel {
         // removed-top heightmap, initialized to full stock
         this.data = new Float32Array(new SharedArrayBuffer(stepsX * stepsY * 4));
         this.data.fill(opt.stockTop);
+
+        // block-max grid over `data` for air-stamp skipping. invariant:
+        // blockMax[b] >= max(data over block b) at all times -- exact right
+        // after #refreshBlocks, stale (too high) once writes lower nodes.
+        // stale bounds stay sound (an over-estimate can only suppress skips,
+        // never enable a wrong one); `blockDirty` flags blocks whose bound
+        // must be recomputed to restore tightness, `dirtyBlocks` lists them
+        // so refresh touches only written-to blocks
+        this.blocksX = Math.ceil(stepsX / BLOCK_SIZE);
+        this.blocksY = Math.ceil(stepsY / BLOCK_SIZE);
+        this.blockMax = new Float32Array(this.blocksX * this.blocksY)
+            .fill(opt.stockTop);
+        this.blockDirty = new Uint8Array(this.blocksX * this.blocksY);
+        this.dirtyBlocks = [];
     }
 
     /** world x,y -> fractional grid coords */
@@ -190,7 +236,11 @@ export class StockModel {
             return entry;
         }
 
+        // fold the sweep and journal the recording time (diagnostics; the
+        // journal is the per-sweep record consumers may inspect)
+        const t0 = time_now();
         this.#strike(rec.camLines, profile, rec.onProgress, rec.tool?.profileDim?.maxo);
+        entry.strikeMs = time_now() - t0;
         return entry;
     }
 
@@ -214,6 +264,15 @@ export class StockModel {
      * the sweep where the disc boundary scallops between stamps; those
      * cells keep the stock top, which is the safe direction for every
      * consumer (skipclear/clearedRegion mask less, rapids stay higher).
+     *
+     * Air stamps are skipped soundly: a coarse block-max grid over the
+     * heightmap proves "whole footprint already at or below tip z" with a
+     * handful of reads, at segment granularity when an entire subdivision
+     * run is over air and per stamp otherwise (see #regionAir). Skipped
+     * stamps are exactly those whose min-merge would write nothing, so the
+     * folded heightmap is identical to unconditional stamping. Stale block
+     * bounds after writes only suppress skips (never enable wrong ones);
+     * bounds are refreshed after each camLine.
      *
      * @param {Array} camLines polylines (Polygon or point array, points with x,y,z)
      * @param {Float32Array} profile raster tool profile (grid-pixel offsets)
@@ -243,6 +302,25 @@ export class StockModel {
             }
         }
         const maxStep = Math.max(resolution, Math.round(radpx) * resolution);
+        // shallowest tip z this sweep can stamp: profile points whose write
+        // (tipz - dz, tipz >= zmin) can never dip below the stock top never
+        // lower any cell and are excluded from the air-skip groups
+        let zmin = Infinity;
+        for (let line of camLines) {
+            const pts = line.points || line;
+            if (!pts) {
+                continue;
+            }
+            for (let i = 0; i < pts.length; i++) {
+                if (pts[i].z < zmin) {
+                    zmin = pts[i].z;
+                }
+            }
+        }
+        if (zmin === Infinity) {
+            zmin = stockTop;
+        }
+        const groups = profileAirGroups(profile, zmin, stockTop);
         // progress denominator: total path points (subdivided sample count
         // is always >= this, so the reported fraction is clamped)
         let total = 0;
@@ -251,50 +329,88 @@ export class StockModel {
                 total += (line.points || line)?.length || 0;
             }
         }
-        let done = 0;
+        let done = 0,
+            lineIdx = 0;
         for (let line of camLines) {
+            lineIdx++;
             const pts = line.points || line;
-            if (!pts || pts.length === 0) {
-                continue;
-            }
-            // single-point line (e.g. drill mark): stamp directly
-            if (pts.length === 1) {
-                const p = pts[0];
-                done++;
-                if (p.z < stockTop) {
-                    this.#stamp(p.x, p.y, p.z, profile);
-                }
-                continue;
-            }
-            let prev = pts[0];
-            for (let i = 1; i < pts.length; i++) {
-                const p = pts[i];
-                const dx = p.x - prev.x,
-                    dy = p.y - prev.y,
-                    dist = Math.sqrt(dx * dx + dy * dy),
-                    // subdivide long segments so the swept surface has no gaps
-                    n = Math.max(1, Math.ceil(dist / maxStep));
-                for (let s = 0; s <= n; s++) {
-                    const t = s / n,
-                        z = prev.z + (p.z - prev.z) * t;
+            if (pts && pts.length > 0) {
+                // single-point line (e.g. drill mark): stamp directly
+                if (pts.length === 1) {
+                    const p = pts[0];
                     done++;
-                    if (onProgress && (done & 16383) === 0) {
-                        onProgress(Math.min(1, done / total));
+                    if (p.z < stockTop) {
+                        this.#stamp(p.x, p.y, p.z, profile, groups);
                     }
-                    // z filter: above the stock surface nothing is removed
-                    if (z >= stockTop) {
-                        continue;
+                } else {
+                    let prev = pts[0];
+                    for (let i = 1; i < pts.length; i++) {
+                        const p = pts[i];
+                        const dx = p.x - prev.x,
+                            dy = p.y - prev.y,
+                            dist = Math.sqrt(dx * dx + dy * dy),
+                            // subdivide long segments so the swept surface
+                            // has no gaps
+                            n = Math.max(1, Math.ceil(dist / maxStep));
+                        // segment-level air skip: stamp positions, and thus
+                        // gx(t), gy(t), z(t), are linear (fp-monotone) in t
+                        // between the interpolated endpoints, so every stamp
+                        // it would make has its tip at or above the lower
+                        // endpoint z and its nodes inside each group's
+                        // endpoint node box. when the block-max bound proves
+                        // every node of that box already sits at or below the
+                        // group's shallowest write, no stamp of the segment
+                        // can lower any cell and the entire subdivision loop
+                        // is skipped. endpoints reuse the loop's own
+                        // interpolation (prev + d*1) so the box matches the
+                        // stamped arithmetic exactly
+                        const xe = prev.x + dx,
+                            ye = prev.y + dy,
+                            ze = prev.z + (p.z - prev.z);
+                        if (this.#groupsAir(
+                            this.toGridX(Math.min(prev.x, xe)),
+                            this.toGridX(Math.max(prev.x, xe)),
+                            this.toGridY(Math.min(prev.y, ye)),
+                            this.toGridY(Math.max(prev.y, ye)),
+                            Math.min(prev.z, ze),
+                            groups
+                        )) {
+                            done += n + 1;
+                            prev = p;
+                            continue;
+                        }
+                        for (let s = 0; s <= n; s++) {
+                            const t = s / n,
+                                z = prev.z + (p.z - prev.z) * t;
+                            done++;
+                            if (onProgress && (done & 16383) === 0) {
+                                onProgress(Math.min(1, done / total));
+                            }
+                            // z filter: above the stock surface nothing is removed
+                            if (z >= stockTop) {
+                                continue;
+                            }
+                            this.#stamp(
+                                prev.x + dx * t,
+                                prev.y + dy * t,
+                                z,
+                                profile,
+                                groups
+                            );
+                        }
+                        prev = p;
                     }
-                    this.#stamp(
-                        prev.x + dx * t,
-                        prev.y + dy * t,
-                        z,
-                        profile
-                    );
                 }
-                prev = p;
+            }
+            // periodically restore tight block-max bounds so air stretches
+            // over ground cut earlier in this same sweep are detected;
+            // amortized (every 64 lines) to keep the cutting phase cheap,
+            // plus once at the end so the next recordSweep starts tight
+            if ((lineIdx & 63) === 63) {
+                this.#refreshBlocks();
             }
         }
+        this.#refreshBlocks();
         if (onProgress) {
             onProgress(1);
         }
@@ -307,11 +423,28 @@ export class StockModel {
      * engagement wins per cell, so writes are min-merged into data.
      * tipz is already filtered against stockTop by the caller, and since
      * dz <= 0 for cutting points, a stamp can never write above stockTop.
+     *
+     * Sound air skip: a profile point lowers a cell only when the write
+     * tipz - dz exceeds that cell's current value. Points are bucketed by
+     * depth (`groups`, see profileAirGroups); for each group the stamp's
+     * node box is exact (Math.round of the extreme offsets is monotone, so
+     * the extreme offsets attain the extreme nodes) and the group's
+     * shallowest write is tipz - dzMax. When the block-max bound proves
+     * every node of the box sits at or below that shallowest write, no
+     * point of the group can lower anything; when that holds for every
+     * group, the footprint iteration is skipped entirely. This never
+     * suppresses a lowering write: any cell some point would lower holds a
+     * value > tipz - dz >= the group test threshold, which fails the test.
+     *
+     * @param {Array} groups profile depth groups from profileAirGroups
      */
-    #stamp(x, y, tipz, profile) {
-        const { data, stepsX, stepsY, resolution } = this;
+    #stamp(x, y, tipz, profile, groups) {
+        const { data, stepsX, stepsY, blockMax, blockDirty, blocksY, dirtyBlocks } = this;
         const gx = this.toGridX(x),
             gy = this.toGridY(y);
+        if (this.#groupsAir(gx, gx, gy, gy, tipz, groups)) {
+            return;
+        }
         let i = 0;
         while (i < profile.length) {
             const tx = Math.round(profile[i++] + gx),
@@ -322,9 +455,116 @@ export class StockModel {
             }
             const idx = tx * stepsY + ty;
             if (tz < data[idx]) {
+                // lowering the block's max node makes the bound stale: flag
+                // it for refresh (once per block until refreshed). lowering
+                // any other node leaves the bound (an over-estimate of the
+                // max) valid, so no flag is needed
+                const b = ((tx >> BLOCK_SHIFT) * blocksY) + (ty >> BLOCK_SHIFT);
+                if (!blockDirty[b] && data[idx] >= blockMax[b]) {
+                    blockDirty[b] = 1;
+                    dirtyBlocks.push(b);
+                }
                 data[idx] = tz;
             }
         }
+    }
+
+    /**
+     * Sound "all groups air" test. `x0 <= x1` and `y0 <= y1` are fractional
+     * grid coordinates bracketing every stamp position to test (a single
+     * stamp when x0 == x1, a whole segment otherwise); `z` is a lower bound
+     * on the tip z of those stamps. For each depth group the stamp node box
+     * is [round(x0 + xoffMin), round(x1 + xoffMax)] (exact: Math.round is
+     * monotone in its argument) and the group's shallowest possible write
+     * is z - dzMax, so every node in the box sitting at or below that value
+     * means no stamp position covered by the box can lower any cell.
+     *
+     * @returns {boolean} true when no stamp inside the box at tip >= z can
+     *   lower any cell
+     */
+    #groupsAir(x0, x1, y0, y1, z, groups) {
+        if (StockModel.naiveStamps || !groups.length) {
+            return false;
+        }
+        for (let g of groups) {
+            if (!this.#regionAir(
+                Math.round(x0 + g.x0),
+                Math.round(y0 + g.y0),
+                Math.round(x1 + g.x1),
+                Math.round(y1 + g.y1),
+                z - g.dz
+            )) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Sound "all air" test over an inclusive node-index bounding box: are
+     * all lattice nodes in the box guaranteed to sit at or below `z`?
+     *
+     * Uses the block-max grid: each block intersecting the box contributes
+     * an over-estimate of its nodes' max, so if every such bound is <= z
+     * then every node in the box is <= z. A stale (too high) bound only
+     * makes the test answer "not air" and falls back to plain stamping --
+     * never the reverse -- which is what keeps the skip sound regardless
+     * of when #refreshBlocks last ran. Box parts outside the lattice are
+     * ignored (the stamp clips out-of-lattice nodes anyway).
+     *
+     * @param {number} nx0,ny0,nx1,ny1 inclusive node-index box (any order/
+     *   range; may lie partly or wholly outside the lattice)
+     * @param {number} z world z to test against
+     * @returns {boolean} true when no stamp whose footprint fits the box
+     *   can lower any cell at tip z
+     */
+    #regionAir(nx0, ny0, nx1, ny1, z) {
+        const { stepsX, stepsY, blocksY, blockMax } = this;
+        const bx0 = Math.max(0, nx0) >> BLOCK_SHIFT,
+            by0 = Math.max(0, ny0) >> BLOCK_SHIFT,
+            bx1 = Math.min(stepsX - 1, nx1) >> BLOCK_SHIFT,
+            by1 = Math.min(stepsY - 1, ny1) >> BLOCK_SHIFT;
+        for (let bx = bx0; bx <= bx1; bx++) {
+            const row = bx * blocksY;
+            for (let by = by0; by <= by1; by++) {
+                if (blockMax[row + by] > z) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Recompute block-max bounds for flagged (written-to) blocks, restoring
+     * exact maxima so subsequent air-skip tests over freshly cut ground are
+     * tight again. Called periodically from #strike and once at its end;
+     * cost is proportional to what was actually written, and stale bounds
+     * between refreshes are harmless (they only suppress skips).
+     */
+    #refreshBlocks() {
+        const { data, stepsX, stepsY, blocksY, blockMax, blockDirty, dirtyBlocks } = this;
+        for (let b of dirtyBlocks) {
+            blockDirty[b] = 0;
+            const bx = (b / blocksY) | 0,
+                by = b - bx * blocksY,
+                x0 = bx << BLOCK_SHIFT,
+                x1 = Math.min(stepsX, x0 + BLOCK_SIZE),
+                y0 = by << BLOCK_SHIFT,
+                y1 = Math.min(stepsY, y0 + BLOCK_SIZE);
+            let max = -Infinity;
+            for (let x = x0; x < x1; x++) {
+                const row = x * stepsY;
+                for (let y = y0; y < y1; y++) {
+                    const v = data[row + y];
+                    if (v > max) {
+                        max = v;
+                    }
+                }
+            }
+            blockMax[b] = max;
+        }
+        dirtyBlocks.length = 0;
     }
 
     /**
@@ -464,6 +704,62 @@ export class StockModel {
         }
         return strips;
     }
+}
+
+/**
+ * Bucket the profile's writing points by write depth for the air-skip test.
+ * A point (dx,dy,dz) writes tipz - dz; with the shallowest stampable tip at
+ * `zmin`, points with dz <= zmin - stockTop can never write below the stock
+ * top (data never exceeds stockTop) and never lower a cell: they are
+ * excluded. Remaining points are bucketed by exact dz value (flat endmill
+ * profiles: flute at dz=0 plus a shaft ring at dz=-flute_len); each bucket
+ * keeps its extreme offsets, which bound -- exactly, via monotone rounding
+ * -- the lattice nodes its points can touch. Continuous-depth profiles
+ * (ball/taper) exceed the bucket cap and collapse into a single group
+ * spanning every writing point, thresholded by its shallowest write.
+ *
+ * @param {Float32Array} profile raster tool profile (grid-pixel offsets)
+ * @param {number} zmin shallowest tip z the sweep can stamp
+ * @param {number} stockTop world z of the untouched stock surface
+ * @returns {Array} groups [{dz, x0, x1, y0, y1}] (possibly empty)
+ */
+function profileAirGroups(profile, zmin, stockTop) {
+    const zth = zmin - stockTop;
+    const groups = new Map();
+    for (let i = 0; i < profile.length; i += 3) {
+        const dx = profile[i],
+            dy = profile[i + 1],
+            dz = profile[i + 2];
+        if (dz <= zth) {
+            continue;
+        }
+        let g = groups.get(dz);
+        if (!g) {
+            groups.set(dz, g = { dz, x0: dx, x1: dx, y0: dy, y1: dy });
+        } else {
+            if (dx < g.x0) g.x0 = dx; else if (dx > g.x1) g.x1 = dx;
+            if (dy < g.y0) g.y0 = dy; else if (dy > g.y1) g.y1 = dy;
+        }
+    }
+    let list = [...groups.values()];
+    if (list.length > AIR_GROUP_MAX) {
+        let dz = -Infinity,
+            x0 = Infinity, x1 = -Infinity,
+            y0 = Infinity, y1 = -Infinity;
+        for (let i = 0; i < profile.length; i += 3) {
+            const dx = profile[i],
+                dy = profile[i + 1],
+                dzv = profile[i + 2];
+            if (dzv <= zth) {
+                continue;
+            }
+            if (dzv > dz) dz = dzv;
+            if (dx < x0) x0 = dx; else if (dx > x1) x1 = dx;
+            if (dy < y0) y0 = dy; else if (dy > y1) y1 = dy;
+        }
+        list = [{ dz, x0, x1, y0, y1 }];
+    }
+    return list;
 }
 
 /**
