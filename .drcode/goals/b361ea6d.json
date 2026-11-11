@@ -4,15 +4,7 @@
   "description": "MVP сток-осведомлённости: минимальный замкнутый контур, решающий исходную проблему «radial Contour гладит воздух над отверстием, выбранным Rough».\n\nСостав:\n1. Новый класс StockModel (предлагается src/kiri/mode/cam/work/stock.js): heightmap снятой вершины (Float32Array, разрешение согласовано с topo tolerance) + журнал свипов (op, tool profile, camLines, down/leave_z/leave, ov_topz/ov_botz). Живёт на state, создаётся до цикла опер в slice.js:413-459, кэш на widget'е по образцу widget.topo (topo3.js:61-79), инвалидация при изменении списка опер/настроек.\n2. Запись свипов только от Rough / Area-clear (главный проход clear, flats, cutout в op-rough.js:16-130). Свип = max-свёртка профиля инструмента вдоль camLines (та же математика, что Probe.toolAtZ topo3.js:826-855, но с записью max). Учитывать: реальный профиль инструмента; игнорировать движения выше поверхности стока; tabs/clamp-подъёмы; ограничения ov_topz/ov_botz уже применены к camLines.\n3. Потребление в topo3: в crossR_sync (topo3.js:1324-1368) и crossX/Y_sync (1092-1167) разрывать полилинию (end_poly), когда probe лёг на пол heightmap (tv ≈ zMin) И сток-модель показывает, что материал здесь снят. Аналог уже есть в GPU-пути для inside-режима (topo3.js:243).\n4. Debug-слой в превью: визуализация heightmap остатка стока (по образцу слоёв clip.tab/clip.to topo3.js:134-141).\n\nВне скоупа фазы: запись свипов остальными операми (trace/outline/pocket/drill/lathe), GPU-фид, rest-machining, ротари. Оперы с вращением (op-index, op-lathe) пока просто помечают сток-модель «неполной/невалидной», потребители откатываются к текущему поведению.\n\nКритерий приёмки: на детали со сквозным/глухим отверстием, выбранным Rough, Contour radial не выдаёт сегментов над отверстием; npm run pack-dev + npm run smoke проходят; ручная проверка в браузере на 3 режимах (kiri CNC).",
   "notes": "",
   "type": "milestone",
-  "status": "done",
   "parent_id": "b53b6aa9",
-  "linked_task_ids": [
-    "cc94c7a8",
-    "0206d7e5",
-    "cb4937bb",
-    "540a500d"
-  ],
   "order": 0,
-  "created_at": "2026-11-07T08:44:52.289871Z",
-  "updated_at": "2026-11-07T09:22:32.093788Z"
+  "created_at": "2026-11-07T08:44:52.289871Z"
 }
