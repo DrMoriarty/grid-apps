@@ -1239,6 +1239,184 @@ function stitchRegion(levels, opts) {
 }
 
 /**
+ * Douglas-Peucker polyline simplification with collinear-point merge.
+ *
+ * Used to de-staircase the stock model's heightmap-derived void boundary:
+ * the morphological close in freeAnchorRings removes most of the grid
+ * staircase but leaves a residue of ~0.25 * resolution amplitude, which
+ * every offset ring of the family inherits (and amplifies, since each
+ * ring is an offset of the previous boundary). DP with a sub-cell
+ * tolerance collapses the residue into long smooth segments, which also
+ * shrinks vertex counts for the subsequent Clipper offsets. The merged
+ * boundary may extend the void by at most `tol` (chords cut corners on
+ * either side) — acceptable, since engagement and coverage are computed
+ * from the same smoothed contours, keeping them consistent.
+ *
+ * `closed` treats the point list as a ring (the first point is not
+ * repeated at the end). The ring is split at its farthest-from-anchor
+ * point into two open chains so the DP anchors are guaranteed stable
+ * vertices; a final pass merges points that are collinear with their
+ * kept neighbors (the split anchors may sit mid-segment on a long
+ * straight run). Endpoints of open paths are always preserved.
+ *
+ * @param {Point[]} points polygon points (x/y used, z untouched)
+ * @param {number} tol max deviation in mm
+ * @param {boolean} closed true for rings, false for open paths
+ * @returns {Point[]} simplified point list (new array, input untouched)
+ */
+function simplifyPoints(points, tol, closed) {
+    const n = points.length;
+    const min = closed ? 3 : 2;
+    if (n <= min) {
+        return points.slice();
+    }
+    const tolSq = tol * tol;
+    // squared distance of p from segment a-b (clamped projection, so a
+    // point "past" an endpoint measures to the endpoint, not the line)
+    const segDistSq = (p, a, b) => {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const lenSq = dx * dx + dy * dy;
+        if (lenSq < 1e-16) {
+            return p.distToSq2D(a);
+        }
+        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const px = a.x + t * dx - p.x, py = a.y + t * dy - p.y;
+        return px * px + py * py;
+    };
+    // mark points kept by DP over the half-open index chain [i..j] of
+    // `chain` (an index list into `points`); iterative, not recursive —
+    // long chains would blow the call stack in the worst case
+    const dpMark = (chain, from, to, keep) => {
+        const stack = [ from, to ];
+        while (stack.length) {
+            const j = stack.pop(), i = stack.pop();
+            let dmax = -1, imax = -1;
+            for (let m = i + 1; m < j; m++) {
+                const idx = chain[m];
+                const d = segDistSq(points[idx], points[chain[i]], points[chain[j]]);
+                if (d > dmax) {
+                    dmax = d;
+                    imax = m;
+                }
+            }
+            if (imax > 0 && dmax > tolSq) {
+                keep[chain[imax]] = true;
+                stack.push(i, imax, imax, j);
+            }
+        }
+    };
+    const keep = new Array(n).fill(false);
+    if (closed) {
+        // split the ring at the point farthest from point 0
+        let k = 1, dmax = -1;
+        for (let i = 1; i < n; i++) {
+            const d = points[i].distToSq2D(points[0]);
+            if (d > dmax) {
+                dmax = d;
+                k = i;
+            }
+        }
+        if (dmax <= tolSq) {
+            // entire ring collapses toward a point: keep it untouched
+            // (degenerate tiny contour, DP cannot improve on it)
+            return points.slice();
+        }
+        // chain A: indices 0..k, chain B: indices k..n-1 then wrap to 0
+        keep[0] = keep[k] = true;
+        dpMark(points.map((_, i) => i), 0, k, keep);
+        const chainB = [];
+        for (let i = k; i < n; i++) {
+            chainB.push(i);
+        }
+        chainB.push(0);
+        dpMark(chainB, 0, chainB.length - 1, keep);
+    } else {
+        keep[0] = keep[n - 1] = true;
+        dpMark(points.map((_, i) => i), 0, n - 1, keep);
+    }
+    // collinear merge: drop kept points lying (within 1 um) on the line
+    // between their nearest kept neighbors. DP already removed everything
+    // within tol of its chain chords; this only cleans up the split
+    // anchors and duplicate points DP must preserve structurally
+    const mergeEpsSq = 1e-6;
+    const kept = [];
+    for (let i = 0; i < n; i++) {
+        if (keep[i]) {
+            kept.push(i);
+        }
+    }
+    if (kept.length < min) {
+        // DP collapsed the contour below its structural minimum (tiny
+        // ring) — return it untouched rather than degenerate
+        return points.slice();
+    }
+    let list = kept.map(i => points[i]);
+    let changed = true;
+    while (changed && list.length > min) {
+        changed = false;
+        const m = list.length;
+        const out = [];
+        for (let i = 0; i < m; i++) {
+            if (m - out.length <= min) {
+                out.push(list[i]);
+                continue;
+            }
+            if (!closed && (i === 0 || i === m - 1)) {
+                out.push(list[i]);
+                continue;
+            }
+            const prev = list[(i - 1 + m) % m], next = list[(i + 1) % m];
+            if (segDistSq(list[i], prev, next) < mergeEpsSq) {
+                changed = true;
+            } else {
+                out.push(list[i]);
+            }
+        }
+        if (changed) {
+            list = out;
+        }
+    }
+    return list;
+}
+
+/**
+ * Simplify a set of polygons (and their holes) with simplifyPoints,
+ * returning new polygons. Open polygons and inner holes are handled.
+ * Contours that collapse below the structural minimum under
+ * simplification are dropped (conservative: shrinking the void is always
+ * sound, see freeAnchorRings docblock).
+ *
+ * @param {Polygon[]} polys
+ * @param {number} tol max deviation in mm
+ * @returns {Polygon[]}
+ */
+function simplifyPolys(polys, tol) {
+    const out = [];
+    for (let poly of polys) {
+        const pts = simplifyPoints(poly.points, tol, !poly.open);
+        if (pts.length < (poly.open ? 2 : 3)) {
+            continue;
+        }
+        let np = newPolygon();
+        for (let p of pts) {
+            np.push(p);
+        }
+        if (poly.open) {
+            np.setOpen();
+        }
+        if (poly.inner?.length) {
+            np.inner = simplifyPolys(poly.inner, tol);
+        }
+        if (poly.depth !== undefined) {
+            np.depth = poly.depth;
+        }
+        out.push(np);
+    }
+    return out;
+}
+
+/**
  * Void-anchored clearing ring generation (free-edge first machining).
  *
  * Distinguishes the two kinds of edges a clear-mode clip can have:
@@ -1259,9 +1437,11 @@ function stitchRegion(levels, opts) {
  *     new material (no full-width passes, no idle rings over void);
  *   the family stops at the first ring with no fresh material to cut,
  *     a ring entirely outside the safe axis zone, or the `steps` cap;
- *   the wall-anchored ring(s) (legacy firstOff and finish_cut anchors,
- *     computed from the working clip exactly as the legacy generator
- *     does) are appended last, so the wall gets a light finishing pass.
+ *   the wall-anchored ring(s) — anchored on the shadow dilated by
+ *     R + leave (axis space), i.e. the boundary of the forbidden axis
+ *     zone, with the finish_cut variant dilated further — are appended
+ *     last, so the wall gets a light finishing pass even on narrow
+ *     shelves where a clip-anchored (legacy firstOff) ring would collapse
  *
  * Every candidate ring is constrained twice before emission:
  *   - intersected with the "safe" axis zone = tool reach of the clip
@@ -1341,6 +1521,19 @@ function freeAnchorRings(ctx) {
     if (!voidPolys.length) {
         return undefined;
     }
+    // the close removes most of the grid staircase but leaves a residue
+    // of ~0.25 * resolution amplitude on the free-edge boundary — and
+    // every ring of the family is an offset of that boundary, so the
+    // wiggle would persist (and compound) in the emitted paths. simplify
+    // the contour with a sub-cell Douglas-Peucker tolerance + collinear
+    // merge (see simplifyPoints). the smoothed void may extend the raw
+    // void by at most tol; mat/engagement/coverage below are all computed
+    // from these same smoothed contours, so they stay consistent
+    const tol = Math.max(0.05, 0.25 * stockModel.resolution);
+    voidPolys = simplifyPolys(voidPolys, tol);
+    if (!voidPolys.length) {
+        return undefined;
+    }
     // material remaining at this plane inside the clip
     let mat = [];
     POLY.subtract(clipBase, voidPolys, mat, undefined, z, 0.01);
@@ -1380,13 +1573,22 @@ function freeAnchorRings(ctx) {
         }
         // keep only the path inside the safe axis zone (drops wall-side
         // violations and out-of-reach wander; may split rings into open
-        // fragments, which the emitter handles like any open polyline)
+        // fragments, which the emitter handles like any open polyline).
+        // simplify each fragment with the same tolerance as the void
+        // boundary so emitted paths carry no residual per-cell jitter
+        // introduced by the safe-zone clipping
         let frags = [];
         for (let r of raw) {
             let cut = r.cut(safe, true);
-            if (cut) frags.appendAll(cut);
+            if (cut) frags.appendAll(simplifyPolys(cut, tol));
         }
         if (!frags.length) {
+            // family reached the safe boundary everywhere: ring axes move
+            // monotonically outward from the void as c grows, so once an
+            // offset lands entirely inside the forbidden zone (or beyond
+            // reach) every later offset lands deeper — no later c can
+            // produce a legal fragment again. the wall ring(s) anchored
+            // on the safe boundary cover the final stepover band
             break;
         }
         // fresh-material engagement: sweep the fragments by the tool
@@ -1416,6 +1618,14 @@ function freeAnchorRings(ctx) {
         }
         let engA = eng.reduce((a, p) => a + p.areaDeep(), 0);
         if (engA < minEng) {
+            // a ring's sweep is void ⊕ (c + R) — a monotone superset of
+            // every earlier ring's sweep — so its fresh band is the only
+            // strip where this offset can touch new material; ~zero fresh
+            // here means no later offset can do better anywhere (each
+            // boundary segment's band has already crossed all remaining
+            // material or left the safe zone). any residual uncovered
+            // band near the wall is finished by the wall ring(s) and
+            // validated by the coverage net below
             break;
         }
         // record the full sweep over material (not just the fresh part):
@@ -1427,11 +1637,30 @@ function freeAnchorRings(ctx) {
         return undefined;
     }
 
-    // wall-anchored finishing ring(s), generated from the working clip
-    // exactly as the legacy progression anchors them
-    let wall = POLY.offset(clip, [ firstOff ], { count: 1, flat: true, z, ...offopt }) ?? [];
+    // wall-anchored finishing ring(s). anchored on the shadow dilated by
+    // R + leave in axis space — the exact boundary of the forbidden axis
+    // zone — instead of the legacy offset(clip, -(R + L)) contour. the
+    // legacy anchor degenerates (collapses and gets dropped) wherever the
+    // local material width is <= 2 * (R + L) — a narrow shelf left
+    // un-aligned at its closed edge (see #703ee573: 8mm shelf, Ø8 tool,
+    // L=0). the shadow-dilated contour exists for any geometry, its tool
+    // disk reaches to within L of the wall, and because it coincides with
+    // the safe-zone boundary the family fragments cut by `safe` join it
+    // without gaps. clipped to the safe zone like any family ring, so
+    // segments outside the op's reach (shadow near the clip boundary) are
+    // trimmed rather than wandering outside the working area
+    let wall = [];
+    for (let w of POLY.offset(shadow, [ R + L ], { count: 1, flat: true, z, ...offopt }) ?? []) {
+        let cut = w.cut(safe, true);
+        if (cut) wall.appendAll(cut);
+    }
     if (finishCut) {
-        wall.appendAll(POLY.offset(clip, [ firstOff - finishCut ], { count: 1, flat: true, z, ...offopt }));
+        // legacy finish_cut pass sits finishCut deeper into the material
+        // than the wall ring; same anchor, dilated accordingly
+        for (let w of POLY.offset(shadow, [ R + L + finishCut ], { count: 1, flat: true, z, ...offopt }) ?? []) {
+            let cut = w.cut(safe, true);
+            if (cut) wall.appendAll(cut);
+        }
     }
 
     // coverage net: the family plus wall rings must leave no significant
@@ -1451,13 +1680,19 @@ function freeAnchorRings(ctx) {
     cov = POLY.union(cov, 0.00001, true);
     let uncut = [];
     POLY.subtract(mat, cov, uncut, undefined, z, 0);
-    // material within R + L of the shadow is the intentional leave shell —
+    // material within L of the shadow is the intentional leave shell —
     // neither the generated set nor the legacy progression may touch it —
-    // so only uncut material outside that zone counts against coverage
-    // (forb is exactly that zone, computed above)
-    if (forb.length) {
+    // so only uncut material outside that zone counts against coverage.
+    // `forb` (the axis-space shadow ⊕ R + L zone) must NOT be used here:
+    // it is the tool-axis no-go band, whose material footprint reaches
+    // R + L into the clip, so forgiving uncut material across all of it
+    // would silently accept a wall band up to R wide left un-machined.
+    // the true leave shell is shadow ⊕ L in material space; anything
+    // outside it must be covered by the family or the wall ring(s)
+    let leave = POLY.offset(shadow, [ L + ts_eps ], { count: 1, flat: true, z, ...offopt, minArea: 0.01 }) ?? [];
+    if (leave.length) {
         let bad = [];
-        POLY.subtract(uncut, forb, bad, undefined, z, 0);
+        POLY.subtract(uncut, leave, bad, undefined, z, 0);
         uncut = bad;
     }
     let uncutA = uncut.reduce((a, p) => a + p.areaDeep(), 0);
