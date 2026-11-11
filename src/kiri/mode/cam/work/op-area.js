@@ -19,6 +19,12 @@ const ctyp = clib.ClipType;
 const ptyp = clib.PolyType;
 const cfil = clib.PolyFillType;
 const ts_eps = 0.01;
+// round-join arc tolerance (mm) for internal-only tool-disk sweeps (travel
+// boundaries, engagement/coverage tests). these are never emitted as cut
+// paths, so a coarse tolerance costs nothing visible; the clipper default
+// (~2.5e-6 mm) generates ~2500 arc segments per circle, which makes each
+// sweep over a long polyline take seconds
+const sweepArc = 0.01;
 
 class OpArea extends CamOp {
     constructor(state, op) {
@@ -541,7 +547,7 @@ class OpArea extends CamOp {
                     // store travel boundary that triggers up and over moves
                     let tool_shadow = slice.tool_shadow = shadow.clone(true);
                     if (area.isOpen()) {
-                        tool_shadow.push(...outs[0].clone().setZ(z).offset_open(toolDiam / 2, 'round'));
+                        tool_shadow.push(...outs[0].clone().setZ(z).offset_open(toolDiam / 2, 'round', 2, sweepArc));
                     } else {
                         tool_shadow.push(
                             area,
@@ -1310,6 +1316,17 @@ function freeAnchorRings(ctx) {
     if (!voidPolys.length) {
         return undefined;
     }
+    // union the strips before closing: the raw strip list is one rect per
+    // grid-row run (thousands of rects over a cleared cavity) and
+    // ClipperOffset processes every input path independently, so offsetting
+    // the merged (perimeter-only) contour set is much cheaper. exact:
+    // offset(A u B, d) = offset(A, d) u offset(B, d). single clipper pass:
+    // pairwise POLY.union is quadratic in the strip count
+    let cuni = new clib.Clipper(),
+        ctree = new clib.PolyTree();
+    cuni.AddPaths(voidPolys.flatMap(p => p.toClipper()), ptyp.ptSubject, true);
+    cuni.Execute(ctyp.ctUnion, ctree, cfil.pftEvenOdd, cfil.pftEvenOdd);
+    voidPolys = POLY.fromClipperTreeUnion(ctree, z, 0.01);
     // de-staircase the strip union (see docblock) with a morphological
     // close of one grid cell radius; round joins avoid miter spikes.
     // fresh opts object per call: POLY.offset accumulates into opts.outs,
@@ -1343,7 +1360,7 @@ function freeAnchorRings(ctx) {
     // region its disk would touch
     const sweepOf = (frag) => {
         if (frag.open) {
-            return frag.clone(true).offset_open(R, 'round');
+            return frag.clone(true).offset_open(R, 'round', 2, sweepArc);
         }
         return POLY.offset([ frag ], [ R ], { count: 1, flat: true, z, ...offopt, minArea: 0 });
     };

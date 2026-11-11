@@ -1344,12 +1344,17 @@ export class Polygon {
      *
      * @param {number} distance
      * @param {'square'|'round'|'miter'} type
+     * @param {number} miterLimit
+     * @param {number} [arc] round-join arc tolerance in mm; the clipper
+     *   default (0.25 in scaled integer units) approximates 2.5e-6 mm and
+     *   generates ~2500 segments per circle, which explodes on rounded
+     *   sweeps over long polylines. callers doing area math on the sweep
+     *   (engagement/coverage tests) can pass a coarser tolerance
      * @returns {Polygon[]}
      */
-    offset_open(distance, type = 'miter', miterLimit = 2) {
+    offset_open(distance, type = 'miter', miterLimit = 2, arc) {
         if (this.isOpen()) {
-            let coff = new ClipperOffset(),
-                dudd = (coff.MiterLimit = miterLimit),
+            let coff = new ClipperOffset(miterLimit, arc !== undefined ? arc * config.clipper : undefined),
                 tree = new PolyTree(),
                 entt = {
                     'square' : EndType.etOpenSquare,
