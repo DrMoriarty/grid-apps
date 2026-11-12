@@ -1487,18 +1487,31 @@ function smoothPixelVoid(polys, z, resolution) {
  * strip boundary the rings otherwise anchor to.
  *
  * A hole qualifies as a free-edge contour only when the stock removal
- * model verifies the void it encloses down to the cut plane: the heightmap
- * must show no material rising above the tip plane inside the contour
- * (inset by one grid cell to forgive wall-straddling cell quantization).
- * An unverified hole (under-roughed cavity the rings would hang their
- * axes over) rejects the model anchor for the whole plane — the caller
- * falls back to pixel anchoring, which never trusts model-true contours.
+ * model verifies the void it encloses down to the cut plane in the zone a
+ * legal axis can cross: the heightmap must show no material rising above
+ * the tip plane farther than R + L from the cavity wall (the axis-standoff
+ * band is unflyable by construction — `safe` excludes shadow ⊕ (R + L) —
+ * and holds the intentional leave shell). Two forgiveness classes keep
+ * real-world planes from spuriously failing that check:
+ *   - wall/standoff band material (see above), and
+ *   - quantization slivers within one grid cell of the verified void
+ *     boundary (cells straddling a cleared/material boundary never pass
+ *     the 4-corner cleared test — the same class the coverage net
+ *     forgives via `vquiet`).
+ * An unverified hole core (under-roughed cavity the rings would hang
+ * their axes over) still rejects the model anchor for the whole plane —
+ * the caller falls back to pixel anchoring, which never trusts model-true
+ * contours.
  *
  * Void the matrix verifies beyond the model contours (air created by the
  * passes themselves rather than by model geometry, e.g. facing near the
  * stock top) is returned merged in, de-staircased with the pixel path, so
  * those free edges keep smoothed anchoring while the model contours stay
- * exact.
+ * exact. Anchor edges bordering the part wall are sourced from the smooth
+ * model silhouette (outer contours of the cross-section) rather than the
+ * de-staircased raster: wall-straddling cells never verify cleared, so the
+ * raster boundary there carries up-to-one-cell wiggle that would propagate
+ * into every ring anchored on it.
  *
  * @param {Object} ctx
  * @param {Function} ctx.shadowAt async widget shadow query (cached per z)
@@ -1507,11 +1520,13 @@ function smoothPixelVoid(polys, z, resolution) {
  * @param {Polygon[]} ctx.voidPolys raw (un-smoothed) verified void regions
  * @param {number} ctx.z world z for generated anchor polys
  * @param {number} ctx.resolution stock heightmap grid resolution
+ * @param {number} ctx.R tool radius (flute diameter / 2)
+ * @param {number} ctx.L leave_xy wall allowance
  * @returns {Promise<Polygon[]|undefined>} anchor regions, or undefined to
  *   fall back to pixel anchoring
  */
 async function modelFreeEdgeAnchor(ctx) {
-    const { shadowAt, cutz, reach, voidPolys, z, resolution } = ctx;
+    const { shadowAt, cutz, reach, voidPolys, z, resolution, R, L } = ctx;
 
     // slice the mesh just below the cut plane: inner boundaries of the
     // cross-section are walls of cavities existing in the model at this
@@ -1554,25 +1569,44 @@ async function modelFreeEdgeAnchor(ctx) {
         return undefined;
     }
     // verification: within the model contour (clipped to the reach, where
-    // the matrix carries data, and inset one grid cell to forgive
-    // wall-straddling cell quantization) the matrix must verify void down
-    // to the tip plane. unverified material inside the contour — stock the
-    // rings would hang axes over or face at full depth — rejects the model
-    // anchor for this plane (conservative rollback to pixel anchoring)
+    // the matrix carries data) the matrix must verify void down to the
+    // tip plane wherever a legal axis can travel. two forgiveness classes
+    // match what the tool can actually reach and what the matrix can
+    // actually represent:
+    //   - the axis-standoff band: no legal axis exists within R + L of
+    //     the cavity wall (`safe` excludes shadow ⊕ (R + L), and the
+    //     cavity wall rises through the cut plane or sits under overhang
+    //     material in the shadow), so material there is the intentional
+    //     leave shell or unsweepable residue — verify only the core
+    //     farther than R + L from the wall;
+    //   - quantization slivers: cells straddling the cleared/material
+    //     boundary never pass the 4-corner cleared test, leaving phantom
+    //     material up to one grid cell wide along every free edge — the
+    //     same class the coverage net forgives via `vquiet`. forgive
+    //     material within one grid cell of the verified void boundary.
+    // unverified material in the core — stock the rings would hang axes
+    // over or face at full depth — still rejects the model anchor for
+    // this plane (conservative rollback to pixel anchoring)
     let verified = [];
+    let quiet = POLY.offset(voidPolys, [ resolution + ts_eps ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    }) ?? [];
     for (let hole of candidates) {
         let hr = intersectPolys([ hole ], reach, z);
         if (!hr.length) {
             continue;
         }
-        let hin = POLY.offset(hr, [ -(resolution + ts_eps) ], {
+        let core = POLY.offset(hr, [ -(R + L + ts_eps) ], {
             count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
         }) ?? [];
-        if (!hin.length) {
+        if (!core.length) {
+            // entire cavity within the standoff band: no legal axis
+            // crosses its interior, nothing to verify
+            verified.appendAll(hr);
             continue;
         }
         let rem = [];
-        POLY.subtract(hin, voidPolys, rem, undefined, z, 0);
+        POLY.subtract(core, quiet, rem, undefined, z, 0);
         let remA = rem.reduce((a, p) => a + p.areaDeep(), 0);
         if (remA > 0.05) {
             return undefined;
@@ -1582,26 +1616,52 @@ async function modelFreeEdgeAnchor(ctx) {
     if (!verified.length) {
         return undefined;
     }
-    // void beyond the model contours keeps pixel anchoring: dilate the
-    // verified contours past heightmap quantization, take the matrix void
-    // outside them, and de-staircase that residual only
+    // void beyond the model contours keeps pixel anchoring — except along
+    // the part wall. the raster void boundary there sits up to a grid cell
+    // off the model silhouette (wall-straddling cells never verify cleared:
+    // the same quantization class the core verification forgives) and its
+    // residual de-staircase wiggle propagates into every family ring
+    // anchored on it (measured median zigzag 0.54 mm on the reference top
+    // plane). so the wall-adjacent anchor edge is sourced from the smooth
+    // model silhouette instead: a bridge ring around the cross-section's
+    // outer contours, trimmed to the wall-adjacent stretch where verified
+    // void actually abuts. only void beyond the bridge is de-staircased
+    let silhouette = [];
+    for (let poly of below) {
+        let oc = poly.clone(true);
+        oc.inner = undefined;
+        silhouette.push(oc);
+    }
+    let bridge = [];
+    let silBig = POLY.offset(silhouette, [ resolution * 2 + ts_eps ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    }) ?? [];
+    if (silBig.length) {
+        let ring = [];
+        POLY.subtract(silBig, silhouette, ring, undefined, z, 0);
+        if (ring.length) {
+            let vbig = POLY.offset(voidPolys, [ resolution * 2 + ts_eps ], {
+                count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+            }) ?? [];
+            if (vbig.length) {
+                bridge = intersectPolys(ring, vbig, z);
+            }
+        }
+    }
     let holesBig = POLY.offset(verified, [ resolution + ts_eps ], {
         count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
     }) ?? [];
     let residual = [];
     POLY.subtract(voidPolys, holesBig, residual, undefined, z, 0);
-    if (!residual.length) {
+    let smooth = residual.length ? smoothPixelVoid(residual, z, resolution) : [];
+    if (!bridge.length && !smooth.length) {
         // pure model anchoring: rings are offsets of exact model contours
         return verified;
     }
-    let smooth = smoothPixelVoid(residual, z, resolution);
-    if (!smooth.length) {
-        return verified;
-    }
-    // union before merge (even-odd overlap hazard): the model contours and
-    // the de-staircased residual may touch where the cavity opens into
-    // pass-created air
-    return POLY.union([ ...verified, ...smooth ], 0.00001, true);
+    // union before merge (even-odd overlap hazard): the model contours,
+    // the bridge ring and the de-staircased residual may touch where the
+    // cavity or the silhouette opens into pass-created air
+    return POLY.union([ ...verified, ...bridge, ...smooth ], 0.00001, true);
 }
 
 /**
@@ -1728,8 +1788,9 @@ async function freeAnchorRings(ctx) {
     // set is never excused by smoothing
     let anchor, voidMat;
     let modelAnchor = await modelFreeEdgeAnchor({
-        shadowAt, cutz, reach, voidPolys, z, resolution: stockModel.resolution
+        shadowAt, cutz, reach, voidPolys, z, resolution: stockModel.resolution, R, L
     });
+    console.log(`[FAR] z=${z} cutz=${cutz} R=${R} L=${L} modelAnchor=${modelAnchor ? "YES" : "no-pixel"} voidPolys=${voidPolys.length}`);
     if (modelAnchor) {
         anchor = modelAnchor;
         voidMat = voidPolys;
@@ -1790,13 +1851,19 @@ async function freeAnchorRings(ctx) {
         // keep only the path inside the safe axis zone (drops wall-side
         // violations and out-of-reach wander; may split rings into open
         // fragments, which the emitter handles like any open polyline).
-        // simplify each fragment with the same tolerance as the void
-        // boundary so emitted paths carry no residual per-cell jitter
-        // introduced by the safe-zone clipping
+        // simplify each fragment so emitted paths carry no residual
+        // per-cell jitter introduced by the safe-zone clipping. the
+        // tolerance tracks the anchor source: the pixel path's rings are
+        // raster-derived, so the sub-cell DP tolerance applies — but the
+        // model path's rings are exact model-contour offsets, where the
+        // pixel tolerance would re-introduce ~0.25 mm of zigzag on every
+        // family ring (measured 0.54 mm pooled median on the reference
+        // top plane) — there a tight tolerance only strips the clip
+        // vertices and keeps the rings model-true
         let frags = [];
         for (let r of raw) {
             let cut = r.cut(safe, true);
-            if (cut) frags.appendAll(simplifyPolys(cut, tol));
+            if (cut) frags.appendAll(simplifyPolys(cut, modelAnchor ? ts_eps : tol));
         }
         if (!frags.length) {
             // family reached the safe boundary everywhere: ring axes move
