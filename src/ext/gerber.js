@@ -1,1 +1,1 @@
-../../node_modules/@tracespace/parser/umd/parser.js
+/Users/vasiliy.makarov/pr/grid-apps/node_modules/@tracespace/parser/umd/parser.js
