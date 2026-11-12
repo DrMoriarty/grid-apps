@@ -1607,8 +1607,11 @@ function smoothResidualPolys(polys, resolution) {
  * @param {number} ctx.resolution stock heightmap grid resolution
  * @param {number} ctx.R tool radius (flute diameter / 2)
  * @param {number} ctx.L leave_xy wall allowance
- * @returns {Promise<Polygon[]|undefined>} anchor regions, or undefined to
- *   fall back to pixel anchoring
+ * @returns {Promise<{void:Polygon[],mat:Polygon[]}|undefined>} anchor
+ *   region groups (`void`: verified/residual void regions driving the
+ *   free-edge progression; `mat`: model cross-section regions seeding
+ *   silhouette-adjacent rings), or undefined to fall back to pixel
+ *   anchoring
  */
 async function modelFreeEdgeAnchor(ctx) {
     const { shadowAt, cutz, reach, voidPolys, z, resolution, R, L } = ctx;
@@ -1731,6 +1734,10 @@ async function modelFreeEdgeAnchor(ctx) {
     // beyond the model region, so its residue can never wiggle the
     // silhouette-adjacent anchor edge
     let silRegion = below.map(poly => poly.clone(true));
+    // merged keep-away basis for the residual boundary below only. this
+    // union erases the void|material free-edge contour (verified void and
+    // the cross-section share the cavity wall boundary), so it must never
+    // reach the anchor itself — see the split at the end of this function
     let modelAll = POLY.union([ ...verified, ...silRegion ], 0.00001, true);
     // outward excursion the pixel de-staircase can produce relative to the
     // raw strips: one close cell (smoothPixelVoid dilate/erode radius) plus
@@ -1793,10 +1800,31 @@ async function modelFreeEdgeAnchor(ctx) {
         // recovering area the tool actually swept — see helper docblock)
         smooth = smoothResidualPolys(sp, resolution);
     }
-    // union before merge (even-odd overlap hazard): the model contours and
-    // the de-staircased residual touch where the cavity or the silhouette
-    // opens into pass-created air
-    const out = POLY.union([ ...modelAll, ...smooth ], 0.00001, true);
+    // the anchor is returned as two separate region groups. unioning them
+    // would erase their shared void|material boundary — the model-true
+    // free-edge contour the family anchors on (measured on the reference
+    // ledge plane: union(verified, silRegion) absorbs the deep-cavity hole,
+    // modelAll inner=0, and no ring ever advances over the ledge from its
+    // free edge). the void group drives the free-edge progression (its
+    // boundary offset by +c advances into the material). the material group
+    // reproduces the merged-anchor behavior for silhouette-adjacent rings:
+    // eroded while c < 0 (face pass inward from the part outline on facing
+    // planes), dilated at c >= 0 (clearing the stock band outside the
+    // part). its verified free-edge holes are dropped — the void group's
+    // boundary is that same contour and a material-side copy would
+    // double-cut the same band; unverified cavity holes keep the
+    // merged-anchor ring behavior
+    let matAnchor = silRegion.map(poly => {
+        let c = poly.clone(true);
+        if (c.inner?.length) {
+            c.inner = c.inner.filter(h => !candidates.some(cand => h.isEquivalent(cand)));
+        }
+        return c;
+    });
+    // union before merge (even-odd overlap hazard): verified and the
+    // de-staircased residual are disjoint by construction (residual is
+    // kept a full de-staircase step beyond the model region)
+    const out = POLY.union([ ...verified, ...smooth ], 0.00001, true);
     if (typeof process !== 'undefined' && process.env.FARRD &&
         Math.abs(cutz - parseFloat(process.env.FARRDZ || 30)) < 0.001) {
         const dump = polys => polys.map(p => ({
@@ -1812,9 +1840,10 @@ async function modelFreeEdgeAnchor(ctx) {
             residual: dump(residual),
             smooth: dump(smooth),
             anchor: dump(out),
+            matAnchor: dump(matAnchor),
         })}`);
     }
-    return out;
+    return { void: out, mat: matAnchor };
 }
 
 /**
@@ -1953,7 +1982,9 @@ async function freeAnchorRings(ctx) {
         }
         return `x[${x0.toFixed(2)},${x1.toFixed(2)}] y[${y0.toFixed(2)},${y1.toFixed(2)}]`;
     };
-    console.log(`[FAR] z=${z} cutz=${cutz} R=${R} L=${L} modelAnchor=${modelAnchor ? "YES" : "no-pixel"} voidPolys=${voidPolys.length} clip=${farBB(clipBase)}`);
+    console.log(`[FAR] z=${z} cutz=${cutz} R=${R} L=${L} modelAnchor=${modelAnchor ? "YES" : "no-pixel"} voidPolys=${voidPolys.length} clip=${farBB(clipBase)}` +
+        (typeof process !== 'undefined' && process.env.FARRS ?
+            ` stock=${farBB([ newPolygon().centerRectangle({ x: (stockModel.bounds.min.x + stockModel.bounds.max.x) / 2, y: (stockModel.bounds.min.y + stockModel.bounds.max.y) / 2 }, stockModel.bounds.max.x - stockModel.bounds.min.x, stockModel.bounds.max.y - stockModel.bounds.min.y) ].map(p => { p.setZ(z); return p; }))}` : ''));
     // e2e-observable record of the anchor decision and the working-clip
     // envelope per plane: the harness asserts modelAnchor YES/NO per flat
     // and that no emitted path point leaves the clip (#2a1a05fa)
@@ -1968,10 +1999,13 @@ async function freeAnchorRings(ctx) {
         };
         const probe = (b) => stockModel.clearedRegion([ boxPoly(b) ], tipz)
             .reduce((a, p) => a + p.areaDeep(), 0).toFixed(1);
-        console.log(`[FARRP] z=${cutz} tipz=${tipz} cavityMid=${probe([0, 5, 0, 5])} cavityRim=${probe([42, 46, 0, 3])} wideRing=${probe([10, 30, 0, 10])} outside=${probe([53, 56, 0, 3])}`);
+        console.log(`[FARRP] z=${cutz} tipz=${tipz} cavityMid=${probe([0, 5, 0, 5])} cavityRim=${probe([42, 46, 0, 3])} wideRing=${probe([10, 30, 0, 10])} outside=${probe([53, 56, 0, 3])}` +
+        (process.env.FARRPB ? ` band=${probe(process.env.FARRPB.split(',').map(Number))}` : ''));
     }
+    let anchorMat = [];
     if (modelAnchor) {
-        anchor = modelAnchor;
+        anchor = modelAnchor.void;
+        anchorMat = modelAnchor.mat;
         voidMat = voidPolys;
     } else {
         // de-staircase the strip union for anchoring (see docblock):
@@ -2008,12 +2042,91 @@ async function freeAnchorRings(ctx) {
     if (!mat.length) {
         return undefined;
     }
+    // the stock removal matrix covers the widget bounds only; beyond them
+    // `mat` (clip minus verified void) reads the never-modeled stock margin
+    // as phantom material. by the time this op's later pass runs, that band
+    // was already cut to the stock floor by the earlier pass (its clip
+    // covers the full stock), so anchoring or net-accounting it only
+    // produces air-cutting junk fragments riding the clip boundary
+    // (measured 12-28 fragments beyond the part silhouette on the
+    // reference planes). constrain mat to the modeled domain, one grid
+    // cell of slack for the boundary-straddling cell class the 4-corner
+    // cleared test never verifies
+    {
+        const b = stockModel.bounds;
+        // no slack: the matrix carries no cells beyond its bounds, so any
+        // material read there is the never-modeled margin (physically
+        // already cut to this plane by the previous pass's own paths — its
+        // clip covers the full stock). a slack band here re-arms that blind
+        // strip as phantom fresh material and family/wall offsets anchored
+        // on the domain-edge void boundary ride it as junk fragments
+        // (measured 40 fragments beyond the part silhouette on the
+        // reference ledge plane)
+        const mslack = 0;
+        const matDom = newPolygon().centerRectangle(
+            { x: (b.min.x + b.max.x) / 2, y: (b.min.y + b.max.y) / 2 },
+            (b.max.x - b.min.x) + 2 * mslack,
+            (b.max.y - b.min.y) + 2 * mslack
+        );
+        matDom.setZ(z);
+        const matIn = intersectPolys(mat, [ matDom ], z);
+        if (matIn.length) {
+            mat = matIn;
+        }
+    }
     // quantization forgiveness zone (see net below): everything within one
     // grid cell of the verified void. also the adjacency probe for the
     // coverage domain
     let vquiet = POLY.offset(voidMat, [ stockModel.resolution + ts_eps ], {
         count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
     }) ?? [];
+    // anchor-based forgiveness zone (model-anchor planes only): everything
+    // within one grid cell of the SELECTED anchor boundary. the anchor
+    // de-staircases/free-edge-exact contours ride across phantom-material
+    // bays the raw matrix carries (measured: 2-cell-deep un-cleared rows
+    // hugging the part wall at concave silhouette stretches — twice the
+    // reach of the void-based `vquiet`, since the void boundary itself
+    // sits a cell or more off the wall there). family/wall rings anchored
+    // on the anchor boundary necessarily sweep those bays; their phantom
+    // engagement re-arms junk fragments (measured: the material-group
+    // silhouette ring on the reference ledge plane found 249 mm^2 of pure
+    // wall-hugging slivers and emitted as an air-cutting pass 5.6 mm
+    // outside the part). the raw matrix stays the engagement SOURCE (mat
+    // is untouched) and the coverage net still runs against it, so real
+    // material is never excused — this only stops phantom slivers from
+    // arming ring emission
+    let aquiet = [];
+    if (modelAnchor) {
+        aquiet = POLY.offset(anchor, [ stockModel.resolution + ts_eps ], {
+            count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+        }) ?? [];
+    }
+    // matrix-domain-edge quiet band: the last cell column/row inside the
+    // matrix bounds. cells there straddle the prior sweeps' contours at the
+    // grid edge and fail the 4-corner cleared test like any boundary cell,
+    // leaving phantom slivers up to a cell wide hugging the domain edge —
+    // physically long since cut (the whole-stock rough clears the margin
+    // before the flats pass runs). un-forgiven, they re-arm as fresh
+    // material: rings anchored on the domain-edge void boundary ride them
+    // as junk fragments outside the part silhouette (measured 40 on the
+    // reference ledge plane, engagement 0.1-11 mm^2 of pure edge slivers).
+    // same forgiveness class as vquiet; real material within the band stays
+    // cut — it is inside the ledge/wall rings' sweep by construction
+    let edgeQuiet = [];
+    {
+        const b = stockModel.bounds;
+        const edom = newPolygon().centerRectangle(
+            { x: (b.min.x + b.max.x) / 2, y: (b.min.y + b.max.y) / 2 },
+            (b.max.x - b.min.x) + ts_eps, (b.max.y - b.min.y) + ts_eps
+        );
+        edom.setZ(z);
+        const ecore = POLY.offset([ edom ], [ -(stockModel.resolution + ts_eps) ], {
+            count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+        }) ?? [];
+        if (ecore.length) {
+            POLY.subtract([ edom ], ecore, edgeQuiet, undefined, z, 0);
+        }
+    }
     // coverage accounting domain: mat regions adjoining the verified void —
     // the material the free-edge design (family + wall rings) is responsible
     // for. clipBase can also carry material no ring of the generated set
@@ -2056,7 +2169,29 @@ async function freeAnchorRings(ctx) {
         if (frag.open) {
             return frag.clone(true).offset_open(R, 'round', 2, sweepArc);
         }
-        return POLY.offset([ frag ], [ R ], { count: 1, flat: true, z, ...offopt, minArea: 0 });
+        // closed ring: the true swept region is the annulus between the
+        // ring dilated and eroded by the tool radius. a plain positive
+        // offset returns the dilated REGION contour — used directly as the
+        // sweep, its interior spans the ring's whole content, so any ring
+        // enclosing material claimed all of it as engaged (measured on the
+        // reference ledge plane: the material-group silhouette ring claimed
+        // 249 mm^2 of ledge its disk never touches and emitted as an
+        // air-cutting pass outside the part silhouette; the same
+        // disc-interior accounting armed the junk outside fragments this
+        // feature's earlier revisions kept fighting). void-anchored rings
+        // got the same answer by accident: their disc interior is verified
+        // void, leaving only the true band
+        let outer = POLY.offset([ frag ], [ R ], { count: 1, flat: true, z, ...offopt, minArea: 0 }) ?? [];
+        if (!outer.length) {
+            return [];
+        }
+        let inner = POLY.offset([ frag ], [ -R ], { count: 1, flat: true, z, ...offopt, minArea: 0 }) ?? [];
+        if (!inner.length) {
+            return outer;
+        }
+        let band = [];
+        POLY.subtract(outer, inner, band, undefined, z, 0);
+        return band.length ? band : outer;
     };
 
     // family rings anchored on the selected free-edge boundary (smooth
@@ -2068,11 +2203,23 @@ async function freeAnchorRings(ctx) {
     // immersion), and later rings advance by S toward the occupied wall,
     // keeping each ring's fresh band at ~min(S, R)
     let rings = [];
+    let keptSrc = []; // per-ring anchor source tag (V=void group, M=mat group)
     let removed = []; // swept fresh material of emitted rings so far
     let minEng = S * S * 0.001; // ~zero fresh-material threshold
     let c = Math.min(S - R, 0);
     for (let k = 0; k < steps; k++, c += S) {
         let raw = POLY.offset(anchor, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
+        let rawSrc = raw.map(() => 'V');
+        // model material regions seed the silhouette-adjacent rings the
+        // void group cannot produce (face pass inward from the part
+        // outline on facing planes at c < 0, stock-band clearing outward
+        // at c >= 0) — the exact behavior the merged model anchor had
+        // before the void/material split
+        if (anchorMat.length) {
+            let mr = POLY.offset(anchorMat, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
+            raw.appendAll(mr);
+            rawSrc.appendAll(mr.map(() => 'M'));
+        }
         if (!raw.length) {
             break;
         }
@@ -2089,7 +2236,9 @@ async function freeAnchorRings(ctx) {
         // top plane) — there a tight tolerance only strips the clip
         // vertices and keeps the rings model-true
         let frags = [];
-        for (let r of raw) {
+        let fragSrc = [];
+        for (let ri = 0; ri < raw.length; ri++) {
+            let r = raw[ri];
             let cut = r.cut(safe, true);
             if (!cut) {
                 continue;
@@ -2107,7 +2256,11 @@ async function freeAnchorRings(ctx) {
                 if (c2) capped.appendAll(c2);
             }
             if (capped.length) {
-                frags.appendAll(simplifyPolys(capped, modelAnchor ? ts_eps : tol));
+                for (let f of capped) {
+                    let simp = simplifyPolys([ f ], modelAnchor ? ts_eps : tol);
+                    frags.appendAll(simp);
+                    fragSrc.appendAll(simp.map(() => rawSrc[ri]));
+                }
             }
         }
         if (!frags.length) {
@@ -2119,55 +2272,112 @@ async function freeAnchorRings(ctx) {
             // on the safe boundary cover the final stepover band
             break;
         }
-        // fresh-material engagement: sweep the fragments by the tool
+        // fresh-material engagement: sweep each fragment by the tool
         // radius, intersect (region ∩ region via mask) with remaining
-        // material, drop already-cut. mask/subtract results overlap, so
-        // every stage is unioned first: POLY.subtract runs even-odd, and
-        // overlapping input regions would punch phantom holes into the
-        // result instead of merging
-        let fresh = [];
-        for (let frag of frags) {
+        // material, drop already-cut. on model-anchor planes the
+        // accounting is per fragment: a fragment whose sweep removes no
+        // real fresh material is dropped instead of riding along with its
+        // level — anchor contours dilating over matrix-verified void
+        // outside the part (the clip-edge band) would otherwise emit as
+        // sliver-cutting junk fragments (measured 12-28 fragments beyond
+        // the silhouette on the reference ledge plane). mask/subtract
+        // results overlap, so every stage is unioned before boolean use:
+        // POLY.subtract runs even-odd, and overlapping input regions would
+        // punch phantom holes into the result instead of merging
+        let fresh = []; // per-fragment fresh (sweep ∩ mat − removed) pieces
+        let kept = []; // fragments with real fresh material to cut
+        let keptRaw = []; // full sweep-over-material of kept fragments
+        for (let fi = 0; fi < frags.length; fi++) {
+            let frag = frags[fi];
+            let fh = [];
             for (let sw of sweepOf(frag)) {
                 for (let m of mat) {
                     let hit = sw.mask(m);
-                    if (hit) fresh.appendAll(hit);
+                    if (hit) fh.appendAll(hit);
                 }
             }
+            if (!fh.length) {
+                continue;
+            }
+            let feng = fh;
+            if (removed.length) {
+                // strictlySimple: false — the engagement result only feeds
+                // the fresh-area test (and `removed` feeds the coverage
+                // net's even-odd passes); the strictly-simple post-pass is
+                // quadratic on the pixel-matrix contours this loop runs
+                // against and has measured 60s+ per plane at fine stock
+                // resolutions
+                let fe = [];
+                POLY.subtract(fh, removed, fe, undefined, z, 0, { strictlySimple: false });
+                feng = fe;
+            }
+            if (modelAnchor) {
+                // phantom-sliver forgiveness: un-cleared cells within one
+                // grid cell of the verified void are the quantization class
+                // the coverage net forgives via `vquiet` — material there
+                // is not a reason to emit a fragment. the matrix-domain
+                // edge band (`edgeQuiet`) is the same class at the grid
+                // boundary. the raw matrix stays the engagement source
+                // (mat is untouched), so nothing real gets silently
+                // excused here
+                let fe = [];
+                POLY.subtract(feng, vquiet, fe, undefined, z, 0, { strictlySimple: false });
+                if (aquiet.length && fe.length) {
+                    let fe2 = [];
+                    POLY.subtract(fe, aquiet, fe2, undefined, z, 0, { strictlySimple: false });
+                    fe = fe2;
+                }
+                if (edgeQuiet.length && fe.length) {
+                    let fe2 = [];
+                    POLY.subtract(fe, edgeQuiet, fe2, undefined, z, 0, { strictlySimple: false });
+                    fe = fe2;
+                }
+                feng = fe;
+            }
+            let fA = feng.reduce((a, p) => a + p.areaDeep(), 0);
+            if (typeof process !== 'undefined' && process.env.FARRCF &&
+                Math.abs(cutz - parseFloat(process.env.FARRCZ || 30)) < 0.001) {
+                let rmax = 0;
+                for (const q of frag.points) rmax = Math.max(rmax, Math.hypot(q.x, q.y));
+                console.log(`[FARRCF] k=${k} c=${c.toFixed(2)} src=${fragSrc[fi]} open=${!!frag.open} n=${frag.points.length} rmax=${rmax.toFixed(1)} p0=(${frag.points[0].x.toFixed(1)},${frag.points[0].y.toFixed(1)}) engA=${fA.toFixed(3)}`);
+                if (process.env.FARRCE && fA > 0 && fA < parseFloat(process.env.FARRCEMAX || 15)) {
+                    for (const e of feng) {
+                        console.log(`[FARRCE] k=${k} c=${c.toFixed(2)} src=${fragSrc[fi]} A=${e.areaDeep().toFixed(3)} eng poly n=${e.points.length} open=${!!e.open}: ` +
+                            e.points.map(q => `(${q.x.toFixed(2)},${q.y.toFixed(2)})`).join(' '));
+                    }
+                }
+            }
+            if (fA < minEng) {
+                continue;
+            }
+            kept.push(frag);
+            keptSrc.push(fragSrc[fi]);
+            keptRaw.appendAll(fh);
+            fresh.appendAll(feng);
         }
-        fresh = POLY.union(fresh, 0.00001, true);
-        if (!fresh.length) {
+        if (!kept.length) {
+            // each anchor boundary's fresh band sweeps monotonically with
+            // c, so once no fragment of this offset touches real material,
+            // no later offset can do better anywhere (each boundary
+            // segment's band has already crossed all remaining material or
+            // left the safe zone). any residual uncovered band near the
+            // wall is finished by the wall ring(s) and validated by the
+            // coverage net below
             break;
         }
-        let eng = [];
-        if (removed.length) {
-            // strictlySimple: false — `eng` only feeds the fresh-area test
-            // below (and `removed` feeds the coverage net's even-odd
-            // passes); the strictly-simple post-pass is quadratic on the
-            // pixel-matrix contours this loop runs against and has measured
-            // 60s+ per plane at fine stock resolutions
-            POLY.subtract(fresh, removed, eng, undefined, z, 0, { strictlySimple: false });
-        } else {
-            eng = fresh;
-        }
-        let engA = eng.reduce((a, p) => a + p.areaDeep(), 0);
-        if (typeof process !== 'undefined' && process.env.FARRC && Math.abs(cutz - 30) < 0.001) {
-            console.log(`[FARRC] k=${k} c=${c.toFixed(2)} raw=${raw.length} frags=${frags.length} engA=${engA.toFixed(3)} pts=${frags.reduce((a, f) => a + f.points.length, 0)}`);
-        }
-        if (engA < minEng) {
-            // a ring's sweep is void ⊕ (c + R) — a monotone superset of
-            // every earlier ring's sweep — so its fresh band is the only
-            // strip where this offset can touch new material; ~zero fresh
-            // here means no later offset can do better anywhere (each
-            // boundary segment's band has already crossed all remaining
-            // material or left the safe zone). any residual uncovered
-            // band near the wall is finished by the wall ring(s) and
-            // validated by the coverage net below
-            break;
+        if (typeof process !== 'undefined' && process.env.FARRC &&
+            Math.abs(cutz - parseFloat(process.env.FARRCZ || 30)) < 0.001) {
+            const engA = fresh.reduce((a, p) => a + p.areaDeep(), 0);
+            const srcs = {};
+            for (const s of keptSrc) srcs[s] = (srcs[s] || 0) + 1;
+            console.log(`[FARRC] k=${k} c=${c.toFixed(2)} raw=${raw.length} frags=${frags.length} kept=${kept.length} src=${JSON.stringify(srcs)} engA=${engA.toFixed(3)} pts=${kept.reduce((a, f) => a + f.points.length, 0)}`);
         }
         // record the full sweep over material (not just the fresh part):
         // later rings must not re-count material this ring already removes
-        removed = removed.length ? POLY.union([ ...removed, ...fresh ], 0.00001, true) : fresh;
-        rings.appendAll(frags);
+        removed = removed.length ?
+            POLY.union([ ...removed, ...keptRaw ], 0.00001, true) :
+            POLY.union(keptRaw, 0.00001, true);
+        rings.appendAll(kept);
     }
     if (!rings.length) {
         return undefined;
@@ -2207,6 +2417,50 @@ async function freeAnchorRings(ctx) {
             let cut = w.cut(clipBase, true);
             if (cut) wall.appendAll(cut);
         }
+    }
+    if (modelAnchor && wall.length) {
+        // on model-anchor planes, drop wall fragments whose sweep touches
+        // no real (non-sliver) material: the shadow dilation's outer
+        // contour rides the matrix-verified void band outside the part
+        // silhouette and otherwise emits as sliver-cutting junk (measured
+        // 12-28 fragments beyond the silhouette on the reference ledge
+        // plane). wall fragments are deliberately NOT filtered against
+        // `removed`: finish passes legitimately re-trace already-swept
+        // wall bands
+        let wkept = [];
+        for (let w of wall) {
+            let real = false;
+            for (let sw of sweepOf(w)) {
+                let fh = [];
+                for (let m of mat) {
+                    let hit = sw.mask(m);
+                    if (hit) fh.appendAll(hit);
+                }
+                if (!fh.length) {
+                    continue;
+                }
+                let fe = [];
+                POLY.subtract(fh, vquiet, fe, undefined, z, 0, { strictlySimple: false });
+                if (aquiet.length && fe.length) {
+                    let fe2 = [];
+                    POLY.subtract(fe, aquiet, fe2, undefined, z, 0, { strictlySimple: false });
+                    fe = fe2;
+                }
+                if (edgeQuiet.length && fe.length) {
+                    let fe2 = [];
+                    POLY.subtract(fe, edgeQuiet, fe2, undefined, z, 0, { strictlySimple: false });
+                    fe = fe2;
+                }
+                if (fe.reduce((a, p) => a + p.areaDeep(), 0) >= minEng) {
+                    real = true;
+                    break;
+                }
+            }
+            if (real) {
+                wkept.push(w);
+            }
+        }
+        wall = wkept;
     }
 
     // coverage net: the family plus wall rings must leave no significant
@@ -2259,6 +2513,24 @@ async function freeAnchorRings(ctx) {
         POLY.subtract(uncut, vquiet, bad, undefined, z, 0);
         uncut = bad;
     }
+    // the anchor-based zone is the same quantization class one cell deeper:
+    // wall-straddling cell rows at concave silhouette stretches sit past
+    // the void-based reach, no legal axis exists within R of the shadow
+    // there, and the family bands cover them only where a ring ran. with
+    // sweeps now honest (true annuli above), these rows would otherwise
+    // fail the net and roll the whole plane back to the legacy rings
+    if (aquiet.length && uncut.length) {
+        let bad = [];
+        POLY.subtract(uncut, aquiet, bad, undefined, z, 0);
+        uncut = bad;
+    }
+    // the domain-edge band is the same quantization class at the grid
+    // boundary (see edgeQuiet above); forgive it in the net as well
+    if (edgeQuiet.length && uncut.length) {
+        let bad = [];
+        POLY.subtract(uncut, edgeQuiet, bad, undefined, z, 0);
+        uncut = bad;
+    }
     let uncutA = uncut.reduce((a, p) => a + p.areaDeep(), 0);
     if (uncutA > S * S * 0.25) {
         return undefined;
@@ -2272,10 +2544,34 @@ async function freeAnchorRings(ctx) {
                 len += Math.sqrt(dx * dx + dy * dy);
             }
             const q = p.points[0];
-            return `${p.open ? "open" : "clos"} n=${n} len=${len.toFixed(1)} p0=(${q.x.toFixed(2)},${q.y.toFixed(2)})`;
+            let s = `${p.open ? "open" : "clos"} n=${n} len=${len.toFixed(1)} p0=(${q.x.toFixed(2)},${q.y.toFixed(2)})`;
+            for (const inn of (p.inner ?? [])) {
+                let ni = inn.points.length, li = 0;
+                for (let i = 1; i < ni; i++) {
+                    li += Math.hypot(inn.points[i].x - inn.points[i-1].x, inn.points[i].y - inn.points[i-1].y);
+                }
+                s += ` | inner n=${ni} len=${li.toFixed(1)} p0=(${inn.points[0].x.toFixed(2)},${inn.points[0].y.toFixed(2)})`;
+            }
+            return s;
         };
-        console.log(`[FARR] z=${z} family:\n  ${rings.map(desc).join("\n  ")}`);
+        console.log(`[FARR] z=${z} family:\n  ${rings.map((r, i) => `${desc(r)} src=${keptSrc[i] ?? 'W'}`).join("\n  ")}`);
         console.log(`[FARR] z=${z} wall:\n  ${wall.map(desc).join("\n  ")}`);
+    }
+
+    if (typeof process !== 'undefined' && process.env.FARRW &&
+        Math.abs(cutz - parseFloat(process.env.FARRWZ || 27.5)) < 0.001) {
+        const rt = ps => ps.map(q => `(${q.x.toFixed(2)},${q.y.toFixed(2)})`).join(' ');
+        for (const w of wall) {
+            console.log(`[FARRW] open=${!!w.open} outer: ${rt(w.points)}`);
+            for (const inn of (w.inner ?? [])) console.log(`[FARRW]   inner: ${rt(inn.points)}`);
+        }
+        if (process.env.FARRWF) {
+            rings.forEach((r, i) => {
+                if ((process.env.FARRWF === 'M') !== (keptSrc[i] === 'M')) return;
+                console.log(`[FARRW] family[${i}] src=${keptSrc[i]} open=${!!r.open} n=${r.points.length}: ${rt(r.points)}`);
+                for (const inn of (r.inner ?? [])) console.log(`[FARRW] family[${i}]   inner: ${rt(inn.points)}`);
+            });
+        }
     }
 
     return [ ...rings, ...wall ];
