@@ -344,8 +344,9 @@ class OpArea extends CamOp {
                     // full-engagement pass and later rings ride over
                     // verified void. when the model is present and valid,
                     // replace the ring set with one anchored on the
-                    // free-edge boundary: ring 1 hangs (R - S) beyond
-                    // the free edge over model-verified air, rings advance
+                    // free-edge boundary: ring 1 sits max(R - S, 0) beyond
+                    // the free edge (over model-verified air, or on the
+                    // edge itself when S >= R), rings advance
                     // by the stepover S toward the occupied wall, and the
                     // wall-anchored ring(s) are appended last as a light
                     // finishing pass. when the free edge borders a model
@@ -356,10 +357,15 @@ class OpArea extends CamOp {
                     // legacy rings above when the model is missing/invalid
                     // (rotary work), in spiral mode, or when the
                     // regenerated set would leave material uncovered
-                    // (see freeAnchorRings)
+                    // (see freeAnchorRings). stepover >= 50% is allowed:
+                    // with S >= R the first family ring sits on the free
+                    // edge (max 50% radial immersion) instead of hanging
+                    // over the void, still removing ~min(S, R) of fresh
+                    // material — which is what rescues wide stepovers on
+                    // narrow ledges where the legacy firstOff ring
+                    // collapses (see #703ee573)
                     if (!didSpiral && !op.ignore && !op.walls &&
-                        state.stockModel?.valid &&
-                        toolOver < toolDiam / 2 - ts_eps
+                        state.stockModel?.valid
                     ) {
                         // async: may slice the mesh just below the cut
                         // plane for model-true free-edge contours (cached
@@ -1613,10 +1619,12 @@ async function modelFreeEdgeAnchor(ctx) {
  *
  * The generated ring set replaces the legacy wall-anchored progression:
  *
- *   ring 1 hangs (R - S) beyond the free edge, over model-verified air,
- *     so its disk engages only ~S (stepover) of fresh material;
- *   rings advance by S toward the occupied wall, each removing ~S of
- *     new material (no full-width passes, no idle rings over void);
+ *   ring 1 sits at min(S - R, 0) from the free edge: over model-verified
+ *     air when S < R (disk engages ~S of fresh material), or exactly on
+ *     the edge when S >= R (disk engages at most R — 50% radial
+ *     immersion — since the axis never crosses into fresh material);
+ *   rings advance by S toward the occupied wall, each removing ~min(S, R)
+ *     of new material (no full-width passes, no idle rings over void);
  *   the family stops at the first ring with no fresh material to cut,
  *     a ring entirely outside the safe axis zone, or the `steps` cap;
  *   the wall-anchored ring(s) — anchored on the shadow dilated by
@@ -1672,7 +1680,8 @@ async function modelFreeEdgeAnchor(ctx) {
  * @param {number} ctx.z world z for generated path polys
  * @param {number} ctx.R tool radius (flute diameter / 2)
  * @param {number} ctx.L leave_xy wall allowance
- * @param {number} ctx.S stepover (must be < R, checked by caller)
+ * @param {number} ctx.S stepover (any value <= 2R is coverable; the
+ *   family start is clamped to the free edge when S >= R)
  * @param {number} ctx.firstOff legacy first offset, -(R + L)
  * @param {number} ctx.finishCut legacy finish_cut offset (0 = none)
  * @param {Object} ctx.offopt shared POLY.offset options
@@ -1763,14 +1772,16 @@ async function freeAnchorRings(ctx) {
 
     // family rings anchored on the selected free-edge boundary (smooth
     // model contours when they verified, de-staircased pixel boundary
-    // otherwise). cumulative offset c starts at -(R - S): the first
-    // ring's axis sits R - S beyond the free edge (over verified void) so
-    // its disk engages S of fresh material, then advances by S toward the
-    // occupied wall
+    // otherwise). cumulative offset c starts at min(S - R, 0): the first
+    // ring's axis sits S - R beyond the free edge (over verified void,
+    // engaging ~S of fresh material) when S < R, or exactly on the free
+    // edge when S >= R — the disk then engages at most R (50% radial
+    // immersion), and later rings advance by S toward the occupied wall,
+    // keeping each ring's fresh band at ~min(S, R)
     let rings = [];
     let removed = []; // swept fresh material of emitted rings so far
     let minEng = S * S * 0.001; // ~zero fresh-material threshold
-    let c = S - R;
+    let c = Math.min(S - R, 0);
     for (let k = 0; k < steps; k++, c += S) {
         let raw = POLY.offset(anchor, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
         if (!raw.length) {
