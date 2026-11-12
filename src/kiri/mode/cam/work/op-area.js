@@ -1943,7 +1943,12 @@ async function freeAnchorRings(ctx) {
         }
         let eng = [];
         if (removed.length) {
-            POLY.subtract(fresh, removed, eng, undefined, z, 0);
+            // strictlySimple: false — `eng` only feeds the fresh-area test
+            // below (and `removed` feeds the coverage net's even-odd
+            // passes); the strictly-simple post-pass is quadratic on the
+            // pixel-matrix contours this loop runs against and has measured
+            // 60s+ per plane at fine stock resolutions
+            POLY.subtract(fresh, removed, eng, undefined, z, 0, { strictlySimple: false });
         } else {
             eng = fresh;
         }

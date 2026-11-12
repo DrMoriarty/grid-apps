@@ -418,7 +418,12 @@ export function subtract(setA, setB, outA, outB, z, minArea, opt = {}) {
             sp2 = toClipper(setB);
 
         // more expensive? worth it?
-        clip.StrictlySimple = true;
+        // callers may pass { strictlySimple: false } when the result feeds
+        // area accounting or further even-odd clipper passes only: the
+        // strictly-simple post-pass is quadratic on complex inputs (many
+        // holes / dense pixel-accurate contours) and has measured 60s+ on
+        // engagement bookkeeping in CAM op-area freeAnchorRings
+        clip.StrictlySimple = opt.strictlySimple !== false;
         if (outA) {
             clip.AddPaths(sp1, PathSubject, true);
             clip.AddPaths(sp2, PathClip, true);
