@@ -1,1 +1,1 @@
-../../node_modules/@gridspace/raster-path/build/raster-worker.js
+/Users/vasiliy.makarov/pr/grid-apps/node_modules/@gridspace/raster-path/build/raster-worker.js

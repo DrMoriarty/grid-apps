@@ -1,1 +1,1 @@
-../../node_modules/@tweenjs/tween.js/src/Tween.js
+/Users/vasiliy.makarov/pr/grid-apps/node_modules/@tweenjs/tween.js/src/Tween.js
