@@ -1983,13 +1983,62 @@ async function freeAnchorRings(ctx) {
         if (!voidPolys.length) {
             return undefined;
         }
-        anchor = voidMat = voidPolys;
+        voidMat = voidPolys;
+        // anchor inflation: cells straddling the true free edge never pass
+        // the 4-corner cleared test, so the strip boundary (and thus this
+        // anchor) sits up to one grid cell inside the model edge — and
+        // rings hung (R - S) inside it leave a matching uncut band along
+        // the edge. inflate the ANCHOR only by one grid cell (never
+        // `voidMat`: mat/engagement/coverage below stay honest against the
+        // un-inflated matrix, see docblock) so the anchor boundary sits on
+        // the model edge; the first ring then hangs (R - S) inside the
+        // true edge and its disk sweep reaches S past it instead of
+        // falling up to one cell short. the axis stays over verified void
+        // whenever R - S > resolution; for S >= R it rides the inflated
+        // boundary — at most one phantom cell out, the same quantization
+        // class the coverage net already forgives (vquiet below)
+        anchor = POLY.offset(voidPolys, [ stockModel.resolution ], {
+            count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+        }) ?? voidPolys;
     }
     const tol = Math.max(0.05, 0.25 * stockModel.resolution);
     // material remaining at this plane inside the clip
     let mat = [];
     POLY.subtract(clipBase, voidMat, mat, undefined, z, 0.01);
     if (!mat.length) {
+        return undefined;
+    }
+    // quantization forgiveness zone (see net below): everything within one
+    // grid cell of the verified void. also the adjacency probe for the
+    // coverage domain
+    let vquiet = POLY.offset(voidMat, [ stockModel.resolution + ts_eps ], {
+        count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+    }) ?? [];
+    // coverage accounting domain: mat regions adjoining the verified void —
+    // the material the free-edge design (family + wall rings) is responsible
+    // for. clipBase can also carry material no ring of the generated set
+    // targets and the legacy progression skips as well: the op area is the
+    // part shadow dilated by R (tool reach), so the clip holds an R-wide
+    // band outside the part silhouette at every plane below the stock top.
+    // that band's legacy offset ring (firstOff = R + L > band width) always
+    // collapses, and the next rough plane cuts the band — but counting it
+    // in the net would reject every generated set on such planes, silently
+    // degrading the free edge back to the legacy wall-anchored rings (the
+    // uncut ledge strip this feature exists to remove). mat components
+    // isolated from the void by the shadow are exactly that class; anything
+    // connected to void-adjacent material stays in the domain, under the net
+    let dom = [];
+    for (let m of mat) {
+        if (!vquiet.length) {
+            break;
+        }
+        let ov = intersectPolys([ m ], vquiet, z);
+        let ovA = ov.reduce((a, p) => a + p.areaDeep(), 0);
+        if (ovA > 0.01) {
+            dom.push(m);
+        }
+    }
+    if (!dom.length) {
         return undefined;
     }
     // flat:true offsets return undefined (not []) when they produce no
@@ -2091,7 +2140,12 @@ async function freeAnchorRings(ctx) {
         }
         let eng = [];
         if (removed.length) {
-            POLY.subtract(fresh, removed, eng, undefined, z, 0);
+            // strictlySimple: false — `eng` only feeds the fresh-area test
+            // below (and `removed` feeds the coverage net's even-odd
+            // passes); the strictly-simple post-pass is quadratic on the
+            // pixel-matrix contours this loop runs against and has measured
+            // 60s+ per plane at fine stock resolutions
+            POLY.subtract(fresh, removed, eng, undefined, z, 0, { strictlySimple: false });
         } else {
             eng = fresh;
         }
@@ -2156,13 +2210,14 @@ async function freeAnchorRings(ctx) {
     }
 
     // coverage net: the family plus wall rings must leave no significant
-    // material behind (the legacy progression always covers the clip);
-    // otherwise defer to the legacy rings. union before subtract (even-odd
-    // overlap hazard, see engagement comment above)
+    // material behind over the accounting domain `dom` (the legacy
+    // progression always covers the clip); otherwise defer to the legacy
+    // rings. union before subtract (even-odd overlap hazard, see
+    // engagement comment above)
     let cov = [];
     for (let w of wall) {
         for (let sw of sweepOf(w)) {
-            for (let m of mat) {
+            for (let m of dom) {
                 let hit = sw.mask(m);
                 if (hit) cov.appendAll(hit);
             }
@@ -2171,7 +2226,7 @@ async function freeAnchorRings(ctx) {
     cov.appendAll(removed);
     cov = POLY.union(cov, 0.00001, true);
     let uncut = [];
-    POLY.subtract(mat, cov, uncut, undefined, z, 0);
+    POLY.subtract(dom, cov, uncut, undefined, z, 0);
     // material within L of the shadow is the intentional leave shell —
     // neither the generated set nor the legacy progression may touch it —
     // so only uncut material outside that zone counts against coverage.
@@ -2197,9 +2252,8 @@ async function freeAnchorRings(ctx) {
     // material within one grid cell of the verified void (the raw matrix
     // union when the model anchor holds — its boundary sits within one
     // cell of the anchor anyway); anything wider or deeper still fails
-    // the net and defers to the legacy rings
-    let vquiet = POLY.offset(voidMat, [ stockModel.resolution + ts_eps ],
-        { count: 1, flat: true, z, ...offopt, minArea: 0.01 }) ?? [];
+    // the net and defers to the legacy rings. `vquiet` was computed above
+    // (it doubles as the domain adjacency probe)
     if (vquiet.length) {
         let bad = [];
         POLY.subtract(uncut, vquiet, bad, undefined, z, 0);
