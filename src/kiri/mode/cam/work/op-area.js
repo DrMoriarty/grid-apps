@@ -2636,6 +2636,31 @@ async function freeAnchorRings(ctx) {
         POLY.subtract(uncut, leave, bad, undefined, z, 0);
         uncut = bad;
     }
+    // wall-straddling cell rows (model-anchor planes): matrix cells
+    // straddling the model-true shadow contour never pass the 4-corner
+    // cleared test, so `mat` carries phantom material up to one grid cell
+    // BEYOND the contour. that band is out of reach of every forgiveness
+    // zone anchored on the pixel void (`vquiet`/`aquiet` end at the
+    // contour: the void boundary itself sits up to a cell short of it)
+    // and of the wall ring's sweep (model-true, reaching exactly the
+    // contour) — measured on the reference cavity floor plane: 78
+    // fragments, 2.35 mm^2 hugging the cavity wall, rejecting the whole
+    // generated set and rolling the plane back to the legacy pixel rings.
+    // no model material rises above the cut plane beyond the shadow
+    // contour, so the band holds only quantization phantoms; real floor
+    // material inside the band (below the plane) is covered by the wall
+    // ring, whose sweep reaches the contour. forgive it like the other
+    // quantization classes — anything wider or deeper still fails
+    if (modelAnchor) {
+        let wquiet = POLY.offset(shadow, [ stockModel.resolution + ts_eps ], {
+            count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
+        }) ?? [];
+        if (wquiet.length && uncut.length) {
+            let bad = [];
+            POLY.subtract(uncut, wquiet, bad, undefined, z, 0);
+            uncut = bad;
+        }
+    }
     // the stock model's cleared test is per-cell (all 4 corner nodes at or
     // below the plane), so cells straddling a cleared/material boundary
     // never verify as cleared and `mat` carries a phantom sliver up to one

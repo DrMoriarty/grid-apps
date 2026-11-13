@@ -20,19 +20,24 @@
  *      the [FAR] log) and no milling fragments entirely outside the part
  *      silhouette at the ledge plane;
  *   5. cavity floor / bottom flats planes still machined by the same op,
- *      model anchor correctly falling back to pixel anchoring there;
- *   6. slice time within the linear-perf budget.
- *
+ *      the bottom plane correctly falling back to pixel/legacy anchoring;
  *   6. slice time within the linear-perf budget.
  *   7. authored emission order on the free-anchor flats planes (task
  *      #03afbbf1): the first cutting pass of each plane starts over the
  *      verified void (free edge / central hole) or enters by a ramp from
  *      air, and the wall finish ring is the plane's LAST pass — no
  *      vertical plunge at full radial immersion into the wall band,
- *      followed by useless passes over already-cleared volume.
+ *      followed by useless passes over already-cleared volume. on the
+ *      cavity floor plane the free-anchor set is REQUIRED (a rollback to
+ *      the legacy wall-anchored pixel rings there is the customer defect:
+ *      leveling must start from the central hole's void), and the first
+ *      floor pass must run over the central hole's verified void;
+ *   8. the floor rings around the central hole are model-true: per-path
+ *      MAD of the point-to-hole-contour distance (model section just
+ *      below the floor plane) < 0.1 mm — pixel-fringe rings fail.
  *
  * usage:
- *   node bin/cam-bench/accept.mjs <model.stl> [toolDiam] [stepoverMm]
+ *   node bin/cam-bench/accept.mjs <model.stl> [toolDiam] [stepFraction]
  *
  * env: same knobs as bench.mjs (STEP/DOWN/LEAVE/ALL/INSIDE/SKIPCLEAR),
  * plus ACCEPT_Z(IP) overrides for the reference section heights.
@@ -50,11 +55,13 @@ const ROOT = path.resolve(HERE, '..', '..');
 
 const [ modelPath, toolDiamArg, stepArg ] = process.argv.slice(2);
 const toolDiam = parseFloat(toolDiamArg || '8');
-// stepover in ABSOLUTE mm — the same value is passed to the rough op's
-// `step` field below (it is not a fraction of the tool diameter)
+// stepover as a FRACTION of the tool diameter — passed verbatim to the
+// rough op's `step` field (op.step is a fraction of the diameter, NOT
+// absolute mm: `accept.mjs model.stl 6.35 0.4` = 40% stepover = 2.54 mm).
+// the geometry checks below use S = stepFrac * toolDiam (mm)
 const stepFrac = parseFloat(stepArg || '0.5');
 const R = toolDiam / 2;
-const S = stepFrac;
+const S = stepFrac * toolDiam;
 const LEAVE = +(process.env.LEAVE || 0);
 
 if (!modelPath || !fs.existsSync(modelPath)) {
@@ -677,6 +684,13 @@ function runChecks() {
         process.exit(3);
     }
     const seedU = loopCentroid(holeU), seedL = loopCentroid(holeL);
+    // model-true central hole contour at the cavity floor: section just
+    // below the floor flat plane (the same reference the free-anchor
+    // rings around the hole are verified against in checks 7d/8)
+    const loopsFloor = sectionLoops(vertices, Z_FLOOR - 1e-2);
+    loopsFloor.sort((a, b) => Math.abs(loopArea(b)) - Math.abs(loopArea(a)));
+    const outerF = loopsFloor[0];
+    const holeF = loopsFloor.slice(1).find(h => pointInLoop(outerF, h[0][0], h[0][1]));
     const rin29 = radiiPerTheta(holeU, seedU, Nθ);
     const rin274 = radiiPerTheta(holeL, seedL, Nθ);
     const wArr = rin29.map((r, i) => r - rin274[i]);
@@ -1102,8 +1116,16 @@ function runChecks() {
         const refSet = zPlane !== undefined ? farrSetAt(zTarget) : undefined;
         const paths = zPlane !== undefined ? byZ.get(zPlane) : undefined;
         if (!refSet) {
-            rec(`7 order (${tag})`, !!paths && paths.length > 0,
-                `no free-anchor set at plane (${paths ? paths.length : 0} legacy/pixel paths) — ordering N/A`);
+            // the cavity floor plane MUST run the free-anchor set (goal
+            // #7434434b point 3: leveling starts from the central hole's
+            // void): a rollback to the legacy wall-anchored pixel rings
+            // there is exactly the customer defect — not an N/A. the bottom
+            // plane may legitimately defer to the legacy rings (no verified
+            // void at the plane with coarse down steps — see check 5b)
+            rec(`7 order (${tag})`, tag !== 'floor' && !!paths && paths.length > 0,
+                tag === 'floor' ?
+                    `free-anchor set REQUIRED at the cavity floor plane — got ${paths ? paths.length : 0} legacy/pixel paths (coverage net rolled the plane back)` :
+                    `no free-anchor set at plane (${paths ? paths.length : 0} legacy/pixel paths) — ordering N/A`);
             continue;
         }
         if (!paths || !paths.length) {
@@ -1159,6 +1181,93 @@ function runChecks() {
             `${cuts.length} cuts vs ${refCuts.length} rings, ${unmatched} unmatched, ` +
             `monotone=${monotone}, family-before-wall=${wallAfterFamily}, ` +
             `multiset ${want === got ? 'equal' : 'DIFFERS'}`);
+    }
+
+    // ---- check 7d (floor): the first floor pass runs over verified void.
+    // 7a alone would accept any authored ring 0; the goal's point 3 is
+    // explicit: on a floor with a central hole, leveling starts from the
+    // hole's void in the middle, never with a plunge into the wall band.
+    // two legal shapes: when S < R the first family ring hangs over the
+    // hole's void (points on/inside the model hole contour); when S >= R
+    // ring 0 rides the whole verified-void boundary and the emitted first
+    // cut may be its residual-boundary fragment (over matrix-verified
+    // void by the generator's own construction — accepted via its 'V'
+    // seq-0 match). a legacy wall-anchored first pass matches neither
+    // ---- check 8: the rings around the central hole are model-true. the
+    // hole-anchored family rings are concentric offsets of the model hole
+    // contour, so the per-path distance-to-contour distribution must be
+    // tight around its own median (MAD < 0.1 mm); a pixel-fringe ring
+    // meanders across the quantization band and fails. distances are
+    // pooled per path (never across paths: distinct rings sit at distinct
+    // designed offsets — a pooled MAD would measure the ring spacing, not
+    // the wiggle)
+    if (!holeF) {
+        rec('7d floor first pass over central-hole void', false, 'model hole contour not found in the floor section');
+        rec('8 hole rings model-true', false, 'model hole contour not found in the floor section');
+    } else if (zFloor === undefined) {
+        rec('7d floor first pass over central-hole void', false, 'no milling plane at floor height');
+        rec('8 hole rings model-true', false, 'no milling plane at floor height');
+    } else {
+        const cutsF = byZ.get(zFloor).filter(p => extent2D(p.pts) > 0.5);
+        const firstF = cutsF[0];
+        if (!firstF) {
+            rec('7d floor first pass over central-hole void', false, 'no real cutting pass at the floor plane');
+        } else {
+            // a first-cut point is over the hole void when it sits inside
+            // the model hole contour, or within PTOL-class grace of it
+            // (ring 0 rides the contour itself when stepover >= 50%; the
+            // STL reference section vs the app's mesh slice disagree by
+            // ~0.1-0.3 mm of tessellation — same tolerance as check 1)
+            let off = 0;
+            for (const q of firstF.pts) {
+                if (!pointInLoop(holeF, q[0], q[1]) && distToLoop(holeF, q[0], q[1]) > 0.3) off++;
+            }
+            // void-riding alternative (S >= R): the first cut matches the
+            // authored seq-0 ring and that ring is void-anchored ('V' —
+            // over matrix-verified void by construction). matching reuses
+            // the 7-loop's matcher via a local point grid
+            const refSetF = farrSetAt(Z_FLOOR);
+            let voidRide = false;
+            if (refSetF && off > 0) {
+                const ref0 = refSetF.filter(r => r.w === 'V');
+                const minSeq = Math.min(...refSetF.map(r => r.s));
+                const g0 = ref0.find(r => r.s === minSeq);
+                if (g0) {
+                    const grid0 = makeGrid(g0.pts, 1);
+                    voidRide = firstF.pts.every(q => grid0.nearest(q[0], q[1], 0.25) < 0.25);
+                }
+            }
+            rec('7d floor first pass over central-hole void', off === 0 || voidRide,
+                off === 0 ?
+                    `${firstF.pts.length}/${firstF.pts.length} first-cut points on/inside the model hole contour` :
+                    `first cut rides the authored seq-0 void-anchored ring (${firstF.pts.length} pts, ` +
+                    `${firstF.pts.length - off} off the hole contour)`);
+        }
+        // hole-band paths: every point within R + 0.5 of the hole contour
+        // (covers the family rings while they advance away from the hole;
+        // the wall ring and the pixel-residual fragments at the cavity
+        // wall sit far outside the band and are excluded)
+        const holeBand = R + 0.5;
+        const holeRings = [];
+        for (const p of byZ.get(zFloor)) {
+            if (p.pts.length < 20) continue;
+            const ds = p.pts.map(q => distToLoop(holeF, q[0], q[1]));
+            if (ds.every(d => d < holeBand)) holeRings.push(ds);
+        }
+        if (!holeRings.length) {
+            rec('8 hole rings model-true', false,
+                `no floor path within ${holeBand.toFixed(1)}mm of the model hole contour`);
+        } else {
+            let worst = null;
+            for (const ds of holeRings) {
+                const med = median(ds);
+                const mad = median(ds.map(d => Math.abs(d - med)));
+                if (!worst || mad > worst.mad) worst = { n: ds.length, med, mad };
+            }
+            rec('8 hole rings model-true', worst.mad < 0.1,
+                `${holeRings.length} hole-band rings, worst MAD=${worst.mad.toFixed(3)} mm ` +
+                `(med standoff ${worst.med.toFixed(2)}, ${worst.n} pts)`);
+        }
     }
 
     // ---- check 6: slice perf ----
