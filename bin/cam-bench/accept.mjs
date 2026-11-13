@@ -908,7 +908,7 @@ function runChecks() {
     // parse [FAR] clip boxes per z
     const clips = new Map();
     for (const line of farLog) {
-        const m = line.match(/^\[FAR\] z=([-\d.]+) cutz=[-\d.]+ \S+ modelAnchor=\S+.*clip=x\[([-\d.]+),([-\d.]+)\] y\[([-\d.]+),([-\d.]+)\]/);
+        const m = line.match(/^\[FAR\] z=([-\d.]+) cutz=[-\d.]+ R=[-\d.]+ L=[-\d.]+ modelAnchor=\S+ voidPolys=\d+ clip=x\[([-\d.]+),([-\d.]+)\] y\[([-\d.]+),([-\d.]+)\]/);
         if (m) clips.set(Math.round(parseFloat(m[1]) * 100) / 100, {
             x0: +m[2], x1: +m[3], y0: +m[4], y1: +m[5],
         });
@@ -923,8 +923,11 @@ function runChecks() {
                 q[1] < c.y0 - 0.01 || q[1] > c.y1 + 0.01) outsideClip++;
         }
     }
-    rec('4a axes within clip', outsideClip === 0,
-        `${outsideClip}/${checked} axis points outside clip box`);
+    // vacuous pass forbidden: zero checked points means no clip/milling
+    // plane overlap (or the [FAR] parse broke again) — that fails, not passes
+    rec('4a axes within clip', checked > 0 && outsideClip === 0,
+        `${outsideClip}/${checked} axis points outside clip box` +
+        (checked === 0 ? ' (no [FAR] clip plane matched any milling plane)' : ''));
 
     if (zLedge === undefined) {
         rec('4b no fragments outside silhouette', false, 'no milling plane at ledge height');
