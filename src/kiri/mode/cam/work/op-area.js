@@ -385,7 +385,13 @@ class OpArea extends CamOp {
                             finishCut: finish_cut,
                             offopt,
                             steps: op.steps ?? 999,
-                            shadowAt
+                            shadowAt,
+                            // inside only applies to the flats (leveling)
+                            // pass: its axis must stay within the part
+                            // silhouette (see freeAnchorRings). depth
+                            // planes keep the wall-side stock band
+                            inside: !!(op.inside && flats),
+                            silhouette: shadowBase
                         });
                         if (alt) outs = alt;
                     }
@@ -2012,6 +2018,10 @@ async function modelFreeEdgeAnchor(ctx) {
  * @param {number} ctx.finishCut legacy finish_cut offset (0 = none)
  * @param {Object} ctx.offopt shared POLY.offset options
  * @param {number} ctx.steps ring count cap (op.steps)
+ * @param {boolean} ctx.inside inside-only flats: the tool axis must stay
+ *   within the part silhouette — no stock-band clearing outside the part
+ * @param {Polygon[]} ctx.silhouette part's full top-view outline (widget
+ *   shadow) for the inside-only axis clip
  * @param {Function} ctx.shadowAt async widget shadow query (cached per z)
  * @returns {Promise<Polygon[]|undefined>} replacement ring set, or
  *   undefined to keep the legacy rings
@@ -2045,7 +2055,7 @@ function stampFarrSeq(outs) {
 }
 
 async function freeAnchorRings(ctx) {
-    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt } = ctx;
+    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt, inside, silhouette } = ctx;
 
     // axis-safe zone: within tool reach of the clip, clear of the shadow
     // dilated by the tool radius + wall allowance
@@ -2168,6 +2178,46 @@ async function freeAnchorRings(ctx) {
         });
     }
     const tol = Math.max(0.05, 0.25 * stockModel.resolution);
+
+    // inside-only flats (task #5851ae4a): the tool axis must stay within
+    // the part silhouette — the widget's full top-view outline, not this
+    // plane's section (at a ledge plane the section is the deep cavity,
+    // while the part outline is the top rim). the op clip is the plane
+    // shadow dilated by R, so it admits axes up to R into the stock band
+    // outside the part — a band the customer forbids touching under
+    // Inside only. two consequences, both handled here:
+    //   1. every emitted axis (family ring caps and wall ring) is bounded
+    //      to the working clip ∩ silhouette (`axisClip`), one quantization
+    //      tolerance of slack;
+    //   2. the band is excluded from the material accounting (`mat`) —
+    //      otherwise its fresh engagement arms outward rings the axis clip
+    //      then amputates, and the coverage net demands a band no legal
+    //      axis can machine (measured: 132.9 mm^2 net fail rolling the
+    //      reference top plane back to the legacy rings).
+    // depth planes do not get this constraint: op.inside is threaded to
+    // the flats pass only — the wall-side band there stays with the
+    // depth/profile passes by design
+    let axisClip = clipBase;
+    let silClip = null;
+    if (inside) {
+        let sil = (silhouette?.length ? silhouette : shadow).map(poly => {
+            let c = poly.clone(true);
+            c.inner = [];
+            return c;
+        });
+        silClip = POLY.offset(sil, [ ts_eps ], {
+            count: 1, flat: true, z, ...offopt, minArea: 0.01
+        });
+        if (silClip?.length) {
+            let inter = intersectPolys(clipBase, silClip, z);
+            if (inter.length) {
+                axisClip = inter;
+            }
+        } else {
+            silClip = null;
+        }
+    }
+
     // material remaining at this plane inside the clip
     let mat = [];
     POLY.subtract(clipBase, voidMat, mat, undefined, z, 0.01);
@@ -2201,9 +2251,20 @@ async function freeAnchorRings(ctx) {
             (b.max.y - b.min.y) + 2 * mslack
         );
         matDom.setZ(z);
-        const matIn = intersectPolys(mat, [ matDom ], z);
+        let matIn = intersectPolys(mat, [ matDom ], z);
+        // inside-only: also bound the material to the part silhouette
+        // (see the inside-only block above) — the stock band outside the
+        // part is real material this op must never machine. sequential
+        // passes: intersectPolys is even-odd, so overlapping clip paths in
+        // one pass would exclude their overlap (the part area itself)
         if (matIn.length) {
             mat = matIn;
+        }
+        if (silClip) {
+            matIn = intersectPolys(mat, silClip, z);
+            if (matIn.length) {
+                mat = matIn;
+            }
         }
     }
     // quantization forgiveness zone (see net below): everything within one
@@ -2346,8 +2407,17 @@ async function freeAnchorRings(ctx) {
         // void group cannot produce (face pass inward from the part
         // outline on facing planes at c < 0, stock-band clearing outward
         // at c >= 0) — the exact behavior the merged model anchor had
-        // before the void/material split
-        if (anchorMat.length) {
+        // before the void/material split. inside-only flats drop the
+        // strictly-outward offsets (c > 0): those rings dilate the
+        // silhouette OUTWARD, moving the axis into the stock band outside
+        // the part (measured: ring at c = 1.905 ran ~1.9 mm past the
+        // silhouette on the reference top plane) — forbidden under Inside
+        // only. the c = 0 ring stays (S >= R): its axis rides the
+        // silhouette itself — on the part edge, not past it — and it is
+        // the smooth face ring the top-plane leveling needs; its outside
+        // reach is the disk sweep, the same class the c < 0 rings' sweeps
+        // already have
+        if (anchorMat.length && !(inside && c > 0)) {
             let mr = POLY.offset(anchorMat, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
             raw.appendAll(mr);
             rawSrc.appendAll(mr.map(() => 'M'));
@@ -2384,7 +2454,9 @@ async function freeAnchorRings(ctx) {
             // and the coverage net below validates the result
             let capped = [];
             for (let f of cut) {
-                let c2 = f.cut(clipBase, true);
+                // inside-only: axisClip = clipBase ∩ silhouette, so this
+                // cap also enforces the silhouette containment
+                let c2 = f.cut(axisClip, true);
                 if (c2) capped.appendAll(c2);
             }
             if (capped.length) {
@@ -2544,7 +2616,8 @@ async function freeAnchorRings(ctx) {
     // rings — conservative, as before the free-anchor feature
     let wall = [];
     for (let w of POLY.offset(shadow, [ R + L ], { count: 1, flat: true, z, ...offopt }) ?? []) {
-        let cut = w.cut(clipBase, true);
+        // inside-only: clip to the silhouette-bounded axis clip (see above)
+        let cut = w.cut(axisClip, true);
         // rejoin the pixel-diced fragments of this contour into whole
         // finish chains (see stitchWallFrags) before the engagement
         // filter and emission: fewer, longer wall passes
@@ -2554,7 +2627,7 @@ async function freeAnchorRings(ctx) {
         // legacy finish_cut pass sits finishCut deeper into the material
         // than the wall ring; same anchor, dilated accordingly
         for (let w of POLY.offset(shadow, [ R + L + finishCut ], { count: 1, flat: true, z, ...offopt }) ?? []) {
-            let cut = w.cut(clipBase, true);
+            let cut = w.cut(axisClip, true);
             if (cut) wall.appendAll(stitchWallFrags(cut, modelAnchor ? ts_eps : tol));
         }
     }

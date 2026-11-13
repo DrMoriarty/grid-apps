@@ -76,6 +76,11 @@ class OpRough extends CamOp {
                 smooth: 0,
                 outline: true,
                 omitthru: op.omitthru,
+                // inside only constrains the flats (leveling) passes: their
+                // tool axis must stay within the part silhouette (see
+                // freeAnchorRings). depth planes keep the wall-side stock
+                // band — it belongs to the depth/profile passes
+                inside: op.inside,
                 // skipclear now works for flats: OpArea lowers the cleared
                 // threshold to the bare cut plane (no leave_z) and strictly
                 // below the stock top, so the leave_z skin flats exist to

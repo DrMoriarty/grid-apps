@@ -17,8 +17,9 @@
  *   3. top-plane face ring near the outer silhouette is smooth: median
  *      absolute deviation of (point-to-silhouette distance) < 0.1 mm;
  *   4. inside only: every axis point within the per-plane clip box (from
- *      the [FAR] log) and no milling fragments entirely outside the part
- *      silhouette at the ledge plane;
+ *      the [FAR] log), no milling fragments entirely outside the part
+ *      silhouette at the ledge plane, and (inside-only profile) no
+ *      flats-plane axis point outside the part silhouette;
  *   5. cavity floor / bottom flats planes still machined by the same op,
  *      the bottom plane correctly falling back to pixel/legacy anchoring;
  *   6. slice time within the linear-perf budget.
@@ -974,6 +975,62 @@ function runChecks() {
     rec('4a axes within clip', checked > 0 && outsideClip === 0,
         `${outsideClip}/${checked} axis points outside clip box` +
         (checked === 0 ? ' (no [FAR] clip plane matched any milling plane)' : ''));
+
+    // ---- check 4a-sil: inside-only flats axes within the PART silhouette ----
+    // (task #5851ae4a). the clip box check above is coarse: the op clip is
+    // the plane shadow dilated by R, so axes up to R outside the part pass
+    // it while violating Inside only (measured on the reference top plane:
+    // an outward-dilated silhouette ring ran ~1.9 mm past the part with
+    // 53 axis points outside). the part silhouette is the top-view outline
+    // = outermost loop of model sections spanning the part height (not the
+    // per-plane section: at a ledge plane the section is the deep cavity
+    // while the part outline is the top rim). checked on the flats planes
+    // only — depth planes legitimately keep the wall-side stock band
+    // (finished by the profile pass); the customer accepts that.
+    // tolerance ~ts_eps (op-area quantization slack)
+    {
+        // under test only on the inside-only flats profile: with ALL=1 the
+        // op clears the entire stock rectangle by request — the silhouette
+        // does not bound it
+        const INSIDE = process.env.INSIDE !== '0' && process.env.ALL === '0';
+        const SIL_EPS = 0.01;
+        const silSections = [
+            sectionLoops(vertices, Z_TOP - 1e-3),
+            loopsUpper, loopsLower, loopsFloor,
+            sectionLoops(vertices, Z_BOT + 1e-3),
+        ];
+        const silOuters = silSections.filter(ls => ls.length).map(ls => {
+            ls.sort((a, b) => Math.abs(loopArea(b)) - Math.abs(loopArea(a)));
+            return ls[0];
+        });
+        const outsideSil = (x, y) => {
+            for (const L of silOuters) {
+                if (pointInLoop(L, x, y) || distToLoop(L, x, y) <= SIL_EPS) return false;
+            }
+            return true;
+        };
+        const flatsZs = [ zTop, zLedge, zFloor, zBot ].filter(z => z !== undefined);
+        let silOut = 0, silChecked = 0, silMax = 0;
+        for (const z of flatsZs) {
+            for (const p of (byZ.get(z) || [])) for (const q of p.pts) {
+                silChecked++;
+                if (outsideSil(q[0], q[1])) {
+                    silOut++;
+                    silMax = Math.max(silMax, Math.min(...silOuters.map(L => distToLoop(L, q[0], q[1]))));
+                }
+            }
+        }
+        if (!silOuters.length) {
+            rec('4a-sil axes within part silhouette', false, 'no silhouette sections derived from the model');
+        } else if (!INSIDE) {
+            rec('4a-sil axes within part silhouette', true,
+                `not under test (needs INSIDE=1 ALL=0): ${silOut}/${silChecked} axis points outside silhouette on flats planes`);
+        } else {
+            rec('4a-sil axes within part silhouette', silChecked > 0 && silOut === 0,
+                `${silOut}/${silChecked} axis points outside silhouette on flats planes` +
+                (silOut ? `, max overshoot ${silMax.toFixed(2)} mm` : ''));
+        }
+    }
 
     if (zLedge === undefined) {
         rec('4b no fragments outside silhouette', false, 'no milling plane at ledge height');
