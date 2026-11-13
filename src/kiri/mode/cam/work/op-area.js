@@ -2144,6 +2144,28 @@ async function freeAnchorRings(ctx) {
         anchor = POLY.offset(voidPolys, [ stockModel.resolution ], {
             count: 1, flat: true, z, join: clib.JoinType.jtRound, arc: 250, minArea: 0.01
         }) ?? voidPolys;
+        // silhouette-adjacent rings for the pixel path, same role the
+        // model path's material group plays (see family loop below): the
+        // void group anchors nothing on the part outline, so its rings
+        // reach the silhouette only as clipped remnants of cavity-rim
+        // offsets — the outermost one trims the outline band with a
+        // standoff that wanders with the local rim width (measured
+        // 0.003-2.013 mm on the reference top plane, pooled MAD 0.149 mm
+        // against the 0.1 acceptance). the mesh cross-section just below
+        // the cut plane is model-true and needs no matrix verification:
+        // wherever it carries material rising above the cut plane it is
+        // the shadow, and the safe-zone clip (shadow ⊕ R + L) kills every
+        // ring segment crossing it; where it does not rise (the top-plane
+        // leveling pass) rings over it are the intended leveling trace —
+        // the same reasoning that lets the model path join silRegion to
+        // its anchor unchecked. its holes are dropped regardless of
+        // verification: hole rims the void group does not ring stay
+        // unrung, as before this seeding existed
+        anchorMat = (await shadowAt(cutz - 0.01)).map(poly => {
+            let c = poly.clone(true);
+            c.inner = [];
+            return c;
+        });
     }
     const tol = Math.max(0.05, 0.25 * stockModel.resolution);
     // material remaining at this plane inside the clip
@@ -2367,7 +2389,12 @@ async function freeAnchorRings(ctx) {
             }
             if (capped.length) {
                 for (let f of capped) {
-                    let simp = simplifyPolys([ f ], modelAnchor ? ts_eps : tol);
+                    // the tolerance tracks the ring source, not the plane
+                    // anchor: model-contour (M) rings stay model-true even
+                    // when the plane rolled back to the pixel anchor, where
+                    // the sub-cell DP tolerance would re-introduce ~0.25 mm
+                    // of zigzag on them (see comment above)
+                    let simp = simplifyPolys([ f ], (modelAnchor || rawSrc[ri] === 'M') ? ts_eps : tol);
                     frags.appendAll(simp);
                     fragSrc.appendAll(simp.map(() => rawSrc[ri]));
                 }
