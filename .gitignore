@@ -30,3 +30,4 @@ __pycache__
 .drcode/stats.json
 .drcode/pending_notifications.json
 .drcode/goals/*.state.json
+.drcode/mcp.json
