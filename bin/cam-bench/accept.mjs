@@ -951,6 +951,60 @@ function runChecks() {
         }
     }
 
+    // ---- check 9: EVERY top-plane path is model-true (task #c7a102e5).
+    // check 3 samples only the smoothest face ring riding the outer
+    // silhouette; the customer defect ("много бахромы" at z=30) sits in the
+    // plane's OTHER paths — family rings anchored on the pixel-matrix
+    // fallback carry the quantization fringe. every z=30 cutting path is a
+    // designed offset of a model contour (cavity mouth, outer silhouette,
+    // handle hole — all loops of the section just below the top plane), so
+    // its per-point distance to the NEAREST model contour must be tight
+    // around its own median (MAD < 0.1 mm). a pixel-fringe ring meanders
+    // across the heightmap quantization band and fails; a rollback to the
+    // legacy stock-outline rings (which offset the op clip, not a model
+    // contour) fails too
+    if (zTop === undefined) {
+        rec('9 top-plane paths model-true', false, 'no milling plane at top height');
+    } else {
+        const loopsTop = sectionLoops(vertices, Z_TOP - 1e-3);
+        if (!loopsTop.length) {
+            rec('9 top-plane paths model-true', false, 'model section just below the top plane is empty');
+        } else {
+            const contGrid = makePolyGrid(
+                loopsTop.map(loop => ({ pts: loop.map(p => [ p[0], p[1 ], Z_TOP ]) })), 2);
+            const FAR_D = 12; // points farther than this from every contour
+            let worst = null, farPaths = 0, checked9 = 0;
+            for (const p of byZ.get(zTop)) {
+                if (p.pts.length < 2) continue;
+                // flat cutting paths only: plunge/retract records span z
+                let zmin = Infinity, zmax = -Infinity;
+                for (const q of p.pts) {
+                    if (q[2] < zmin) zmin = q[2];
+                    if (q[2] > zmax) zmax = q[2];
+                }
+                if (zmax - zmin > 0.05) continue;
+                const ds = p.pts.map(q => contGrid.nearest(q[0], q[1], FAR_D));
+                checked9++;
+                if (ds.some(d => d >= FAR_D)) {
+                    farPaths++;
+                    if (!worst) worst = { n: p.pts.length, med: NaN, mad: Infinity };
+                    continue;
+                }
+                const med = median(ds);
+                const mad = median(ds.map(d => Math.abs(d - med)));
+                if (!worst || mad > worst.mad) worst = { n: ds.length, med, mad };
+            }
+            if (!checked9) {
+                rec('9 top-plane paths model-true', false, 'no flat cutting paths at the top plane');
+            } else {
+                rec('9 top-plane paths model-true', !farPaths && worst.mad < 0.1,
+                    `${checked9} paths, worst MAD=${worst.mad === Infinity ? 'inf' : worst.mad.toFixed(3)} mm` +
+                    ` (${worst.n} pts, med standoff ${isNaN(worst.med) ? 'n/a' : worst.med.toFixed(2)})` +
+                    (farPaths ? `, ${farPaths} paths >${FAR_D}mm from every model contour` : ''));
+            }
+        }
+    }
+
     // ---- check 4: inside only — clip containment + no outside fragments ----
     // parse [FAR] clip boxes per z
     const clips = new Map();

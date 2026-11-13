@@ -71,6 +71,18 @@ const CLEAR_EPS = 0.001;
 // grid must resolve, so only these ops' tools drive auto-resolution
 const SWEEP_OPS = new Set(['rough', 'outline', 'trace', 'pocket', 'contour']);
 
+// ray-cast point-in-polygon over a POLY's point list (closed loops; holes
+// are tested separately by the caller). Used by maxTopOver's node scan.
+function pointInPoly(points, x, y) {
+    let inside = false;
+    for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+        const a = points[i], b = points[j];
+        if (((a.y > y) !== (b.y > y)) &&
+            (x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x)) inside = !inside;
+    }
+    return inside;
+}
+
 // monotone-ish ms clock (workers and main thread both have performance;
 // Date.now fallback for exotic environments)
 const time_now = () =>
@@ -596,6 +608,77 @@ export class StockModel {
             v11 = data[x1 * stepsY + y1];
         return (v00 * (1 - fx) + v10 * fx) * (1 - fy)
              + (v01 * (1 - fx) + v11 * fx) * fy;
+    }
+
+    /**
+     * Highest remaining-material surface among heightmap nodes lying
+     * inside `polys` (the region's stock "high point"). Node membership is
+     * a ray-cast test against each region contour; inner holes invert it
+     * (a node inside a hole is outside the region).
+     *
+     * Consumer: the model free-edge anchor's bounded-skin verification
+     * (op-area.js modelFreeEdgeAnchor) measures how far above a flat plane
+     * the unverified material in a cavity core actually stands, to accept
+     * the thin stock skin a flats plane legitimately faces while still
+     * rejecting tall uncut stock the matrix never cleared.
+     *
+     * @param {Polygon[]} polys region of interest (2D x/y closed polygons)
+     * @returns {number} max remaining top z within the region, or
+     *   -Infinity when no lattice node falls inside it
+     */
+    maxTopOver(polys) {
+        const { data, stepsX, stepsY, resolution, minX, minY } = this;
+        if (!polys?.length) {
+            return -Infinity;
+        }
+        let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+        for (let poly of polys) {
+            for (let q of poly.points) {
+                if (q.x < bx0) bx0 = q.x;
+                if (q.x > bx1) bx1 = q.x;
+                if (q.y < by0) by0 = q.y;
+                if (q.y > by1) by1 = q.y;
+            }
+        }
+        if (bx1 < bx0) {
+            return -Infinity;
+        }
+        const gx0 = Math.max(0, Math.floor(this.toGridX(bx0))),
+            gx1 = Math.min(stepsX - 1, Math.ceil(this.toGridX(bx1))),
+            gy0 = Math.max(0, Math.floor(this.toGridY(by0))),
+            gy1 = Math.min(stepsY - 1, Math.ceil(this.toGridY(by1)));
+        let max = -Infinity;
+        for (let gx = gx0; gx <= gx1; gx++) {
+            const x = minX + gx * resolution;
+            const row = gx * stepsY;
+            for (let gy = gy0; gy <= gy1; gy++) {
+                const y = minY + gy * resolution;
+                let hit = false;
+                for (let poly of polys) {
+                    if (x < poly.bounds.minx || x > poly.bounds.maxx ||
+                        y < poly.bounds.miny || y > poly.bounds.maxy) {
+                        continue;
+                    }
+                    if (pointInPoly(poly.points, x, y)) {
+                        hit = !poly.inner?.some(h =>
+                            x >= h.bounds.minx && x <= h.bounds.maxx &&
+                            y >= h.bounds.miny && y <= h.bounds.maxy &&
+                            pointInPoly(h.points, x, y));
+                    }
+                    if (hit) {
+                        break;
+                    }
+                }
+                if (!hit) {
+                    continue;
+                }
+                const v = data[row + gy];
+                if (v > max) {
+                    max = v;
+                }
+            }
+        }
+        return max;
     }
 
     /**

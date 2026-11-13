@@ -391,7 +391,14 @@ class OpArea extends CamOp {
                             // silhouette (see freeAnchorRings). depth
                             // planes keep the wall-side stock band
                             inside: !!(op.inside && flats),
-                            silhouette: shadowBase
+                            silhouette: shadowBase,
+                            // bounded-skin verification limit (task
+                            // #c7a102e5): the stock skin a flats plane
+                            // faces is what the last rough depth plane
+                            // left — at most one rough step-down
+                            // (base_util.lerp clamps the step to `down`)
+                            // above the cut plane
+                            skinMax: Math.max(0, down || 0)
                         });
                         if (alt) outs = alt;
                     }
@@ -1693,6 +1700,10 @@ function smoothResidualPolys(polys, resolution) {
  * @param {Polygon[]} ctx.voidPolys raw (un-smoothed) verified void regions
  * @param {number} ctx.z world z for generated anchor polys
  * @param {number} ctx.resolution stock heightmap grid resolution
+ * @param {number} ctx.tipz effective tip plane for matrix queries (cut
+ *   plane + leave_z; flats pass the bare cut plane)
+ * @param {number} ctx.skinMax tallest stock skin (mm above the tip plane)
+ *   the bounded-skin verification may excuse — one rough step-down
  * @param {number} ctx.R tool radius (flute diameter / 2)
  * @param {number} ctx.L leave_xy wall allowance
  * @returns {Promise<{void:Polygon[],mat:Polygon[]}|undefined>} anchor
@@ -1702,7 +1713,7 @@ function smoothResidualPolys(polys, resolution) {
  *   anchoring
  */
 async function modelFreeEdgeAnchor(ctx) {
-    const { shadowAt, cutz, reach, voidPolys, z, resolution, R, L } = ctx;
+    const { shadowAt, cutz, reach, voidPolys, z, resolution, R, L, stockModel, tipz, skinMax } = ctx;
 
     // slice the mesh just below the cut plane: inner boundaries of the
     // cross-section are walls of cavities existing in the model at this
@@ -1784,6 +1795,24 @@ async function modelFreeEdgeAnchor(ctx) {
         let rem = [];
         POLY.subtract(core, quiet, rem, undefined, z, 0);
         let remA = rem.reduce((a, p) => a + p.areaDeep(), 0);
+        // bounded-skin measurement (task #c7a102e5): when the cut plane sits
+        // between two rough depth planes, the last rough plane leaves a flat
+        // stock skin across the cavity it swept — material standing less
+        // than one rough step-down above this plane. that skin is exactly
+        // what a flats plane faces (full-engagement shaving is its job), so
+        // it must not reject the model anchor the way tall uncut stock does.
+        // measure the skin's true top on the raw matrix node lattice: the
+        // matrix is never smoothed to excuse it (see freeAnchorRings
+        // docblock), and anything standing more than `skinMax` above the tip
+        // plane — a pillar roughing never reached, a matrix undercount —
+        // still rejects the anchor (conservative rollback to pixel
+        // anchoring). planes verifying void to the tip (remA ~ 0: ledge,
+        // floor) never enter this branch — unchanged behavior
+        let maxTop = -Infinity;
+        if (remA > 0.05) {
+            maxTop = stockModel.maxTopOver(rem);
+        }
+        let skin = maxTop - tipz;
         if (typeof process !== 'undefined' && process.env.FARRV) {
             const bb = ps => {
                 let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -1793,9 +1822,10 @@ async function modelFreeEdgeAnchor(ctx) {
                 }
                 return `x[${x0.toFixed(2)},${x1.toFixed(2)}] y[${y0.toFixed(2)},${y1.toFixed(2)}]`;
             };
-            console.log(`[FARRV] z=${z} hole=${bb([ hole ])} hr=${bb(hr)} core=${bb(core)} remA=${remA.toFixed(3)}`);
+            console.log(`[FARRV] z=${z} hole=${bb([ hole ])} hr=${bb(hr)} core=${bb(core)} remA=${remA.toFixed(3)}` +
+                (remA > 0.05 ? ` skinMax=${skin.toFixed(3)} (limit ${(skinMax ?? 0).toFixed(3)})` : ''));
         }
-        if (remA > 0.05) {
+        if (remA > 0.05 && !(skin <= (skinMax ?? 0) + ts_eps)) {
             return undefined;
         }
         verified.appendAll(hr);
@@ -2022,6 +2052,9 @@ async function modelFreeEdgeAnchor(ctx) {
  *   within the part silhouette — no stock-band clearing outside the part
  * @param {Polygon[]} ctx.silhouette part's full top-view outline (widget
  *   shadow) for the inside-only axis clip
+ * @param {number} ctx.skinMax tallest stock skin (mm above the tip plane)
+ *   the model-anchor verification may excuse (one rough step-down; see
+ *   modelFreeEdgeAnchor's bounded-skin verification)
  * @param {Function} ctx.shadowAt async widget shadow query (cached per z)
  * @returns {Promise<Polygon[]|undefined>} replacement ring set, or
  *   undefined to keep the legacy rings
@@ -2055,7 +2088,7 @@ function stampFarrSeq(outs) {
 }
 
 async function freeAnchorRings(ctx) {
-    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt, inside, silhouette } = ctx;
+    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt, inside, silhouette, skinMax } = ctx;
 
     // axis-safe zone: within tool reach of the clip, clear of the shadow
     // dilated by the tool radius + wall allowance
@@ -2092,7 +2125,7 @@ async function freeAnchorRings(ctx) {
     // set is never excused by smoothing
     let anchor, voidMat;
     let modelAnchor = await modelFreeEdgeAnchor({
-        shadowAt, cutz, reach, voidPolys, z, resolution: stockModel.resolution, R, L
+        shadowAt, cutz, reach, voidPolys, z, resolution: stockModel.resolution, R, L, stockModel, tipz, skinMax
     });
     let farBB = ps => {
         let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
