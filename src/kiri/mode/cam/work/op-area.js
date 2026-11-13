@@ -1402,6 +1402,83 @@ function simplifyPoints(points, tol, closed) {
 }
 
 /**
+ * Reassemble the fragments of one clipped wall-finish contour into
+ * continuous finish chains (freeAnchorRings wall block).
+ *
+ * Clipping the wall offset contour on the pixelated clip/stock-matrix
+ * boundary (`w.cut(clipBase, true)`) dices it into real segments and
+ * sub-0.5mm darts: adjacent fragments of one contour share the boundary
+ * crossing vertices, and contour stretches grazing the quantized boundary
+ * come back as degenerate 2-point slivers. Each fragment previously
+ * emitted as its own short pass (measured 88 dart fragments on the
+ * reference ledge plane, all outside the part silhouette).
+ *
+ * Adjacent open fragments are stitched back together at their touching
+ * endpoints (shared crossing vertices, so a tight eps suffices; either
+ * orientation — the emitter treats open paths as direction-agnostic),
+ * the stitched chains are DP-simplified at the family fragment tolerance
+ * to shed the quantization steps, and open chains left with sub-dart 2D
+ * extent — pure quantization remnants shaving nothing a real pass
+ * reaches — are dropped. The coverage net downstream validates the
+ * result and falls back to the legacy rings if the wall band comes up
+ * short, so a dropped dart can never silently strand real material.
+ *
+ * @param {Polygon[]} frags clipped fragments of ONE wall contour
+ * @param {number} simpTol DP tolerance for the stitched chains
+ * @returns {Polygon[]} whole chains and surviving closed contours
+ */
+function stitchWallFrags(frags, simpTol) {
+    // matches the accept harness's cut-worthiness threshold: below it a
+    // path is a dart, not a pass
+    const DART = 0.5;
+    const eps = ts_eps;
+    let out = frags.filter(f => !f.open);
+    let open = frags.filter(f => f.open);
+    const touch = (a, b) => a.distTo2D(b) <= eps;
+    while (open.length) {
+        const chain = open.shift();
+        let again = true;
+        while (again) {
+            again = false;
+            for (let i = 0; i < open.length; i++) {
+                const f = open[i];
+                if (touch(f.first(), chain.last())) {
+                    chain.addPoints(f.points.slice(1));
+                } else if (touch(f.last(), chain.last())) {
+                    f.reverse();
+                    chain.addPoints(f.points.slice(1));
+                } else if (touch(f.last(), chain.first())) {
+                    chain.reverse();
+                    chain.addPoints(f.points.slice(1));
+                } else if (touch(f.first(), chain.first())) {
+                    chain.reverse();
+                    f.reverse();
+                    chain.addPoints(f.points.slice(1));
+                } else {
+                    continue;
+                }
+                open.splice(i, 1);
+                again = true;
+                break;
+            }
+        }
+        out.push(chain);
+    }
+    const simp = simplifyPolys(out, simpTol);
+    return simp.filter(p => {
+        if (!p.open) {
+            return true;
+        }
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const q of p.points) {
+            x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x);
+            y0 = Math.min(y0, q.y); y1 = Math.max(y1, q.y);
+        }
+        return (x1 - x0) + (y1 - y0) >= DART;
+    });
+}
+
+/**
  * Simplify a set of polygons (and their holes) with simplifyPoints,
  * returning new polygons. Open polygons and inner holes are handled.
  * Contours that collapse below the structural minimum under
@@ -2441,14 +2518,17 @@ async function freeAnchorRings(ctx) {
     let wall = [];
     for (let w of POLY.offset(shadow, [ R + L ], { count: 1, flat: true, z, ...offopt }) ?? []) {
         let cut = w.cut(clipBase, true);
-        if (cut) wall.appendAll(cut);
+        // rejoin the pixel-diced fragments of this contour into whole
+        // finish chains (see stitchWallFrags) before the engagement
+        // filter and emission: fewer, longer wall passes
+        if (cut) wall.appendAll(stitchWallFrags(cut, modelAnchor ? ts_eps : tol));
     }
     if (finishCut) {
         // legacy finish_cut pass sits finishCut deeper into the material
         // than the wall ring; same anchor, dilated accordingly
         for (let w of POLY.offset(shadow, [ R + L + finishCut ], { count: 1, flat: true, z, ...offopt }) ?? []) {
             let cut = w.cut(clipBase, true);
-            if (cut) wall.appendAll(cut);
+            if (cut) wall.appendAll(stitchWallFrags(cut, modelAnchor ? ts_eps : tol));
         }
     }
     if (modelAnchor && wall.length) {
