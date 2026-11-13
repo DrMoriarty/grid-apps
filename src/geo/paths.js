@@ -92,6 +92,10 @@ export function tip2tipJoin(paths, startPoint, mergeDist) {
  * @param {boolean} [opt.weight=false] - Use 3D distance weighted by area squared
  * @param {boolean} [opt.term=false] - Terminate after finding first match
  * @param {boolean} [opt.perm=false] - Keep markers permanent (don't undo)
+ * @param {boolean} [opt.inOrder=false] - Emit in array order (author the
+ *   order by pre-sorting the array) instead of greedy nearest-neighbor;
+ *   the start point of each element is still rotated to the position
+ *   nearest the current tool position
  * @returns {Point} Final endpoint after processing
  */
 export function poly2polyEmit(array, startPoint, emitter, opt = {}) {
@@ -100,36 +104,63 @@ export function poly2polyEmit(array, startPoint, emitter, opt = {}) {
     for (;;) {
         found = null;
         mindist = Infinity;
-        for (let poly of array) {
-            if (poly[marker]) {
-                continue;
-            }
-            if (poly.isOpen()) {
-                const d2f = startPoint.distTo2D(poly.first());
-                const d2l = startPoint.distTo2D(poly.last());
-                if (d2f > mindist && d2l > mindist) {
+        if (opt.inOrder) {
+            // authored order: take the next unmarked element as arranged by
+            // the caller; only rotate the start of closed elements to the
+            // point nearest the current position (open paths keep their
+            // authored direction)
+            for (let poly of array) {
+                if (poly[marker]) {
                     continue;
                 }
-                if (d2l < mindist && d2l < d2f && opt.swapdir !== false) {
-                    poly.reverse();
-                    found = { poly: poly, index: 0, point: poly.first() };
-                    mindist = d2l;
-                } else if (d2f < mindist) {
-                    found = { poly: poly, index: 0, point: poly.first() };
-                    mindist = d2f;
+                if (poly.isOpen()) {
+                    found = { poly, index: 0, point: poly.first() };
+                } else {
+                    let index = 0, point = poly.first(), best = Infinity;
+                    poly.forEachPoint((p, i) => {
+                        const d = startPoint.distTo2D(p);
+                        if (d < best) {
+                            best = d;
+                            index = i;
+                            point = p;
+                        }
+                    });
+                    found = { poly, index, point };
                 }
-                continue;
+                break;
             }
-            let area = poly.open ? 1 : poly.area();
-            poly.forEachPoint((point, index) => {
-                dist = opt.weight ?
-                    startPoint.distTo3D(point) * area * area :
-                    startPoint.distTo2D(point);
-                if (dist < mindist) {
-                    found = { poly: poly, index: index, point: point };
-                    mindist = dist;
+        } else {
+            for (let poly of array) {
+                if (poly[marker]) {
+                    continue;
                 }
-            });
+                if (poly.isOpen()) {
+                    const d2f = startPoint.distTo2D(poly.first());
+                    const d2l = startPoint.distTo2D(poly.last());
+                    if (d2f > mindist && d2l > mindist) {
+                        continue;
+                    }
+                    if (d2l < mindist && d2l < d2f && opt.swapdir !== false) {
+                        poly.reverse();
+                        found = { poly: poly, index: 0, point: poly.first() };
+                        mindist = d2l;
+                    } else if (d2f < mindist) {
+                        found = { poly: poly, index: 0, point: poly.first() };
+                        mindist = d2f;
+                    }
+                    continue;
+                }
+                let area = poly.open ? 1 : poly.area();
+                poly.forEachPoint((point, index) => {
+                    dist = opt.weight ?
+                        startPoint.distTo3D(point) * area * area :
+                        startPoint.distTo2D(point);
+                    if (dist < mindist) {
+                        found = { poly: poly, index: index, point: point };
+                        mindist = dist;
+                    }
+                });
+            }
         }
         if (!found || opt.term) {
             break;

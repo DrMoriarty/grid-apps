@@ -1060,7 +1060,12 @@ function stitchSpiral(rings, opts) {
     if (!spiraled) {
         return false;
     }
-    outs.push(...result);
+    // authored-order stamp (see stampFarrSeq): the spiral precedes its
+    // finish ring and any remainder loops; without the stamp the greedy
+    // emitter can output the finish ring ahead of the spiral (which then
+    // relies on the polyEmit engage-detection workaround instead of the
+    // authored order)
+    outs.push(...stampFarrSeq(result));
     return { end: ref };
 }
 
@@ -1934,6 +1939,34 @@ async function modelFreeEdgeAnchor(ctx) {
  * @returns {Promise<Polygon[]|undefined>} replacement ring set, or
  *   undefined to keep the legacy rings
  */
+/**
+ * Stamp the authored emission order onto a generated path set. `k` is the
+ * index in the authored array (0 = cut first). The poly emitter (see
+ * prepare.js descend() and poly2polyEmit's inOrder mode) outputs stamped
+ * polys in ascending farrSeq instead of greedy nearest-neighbor routing,
+ * which otherwise re-orders the set by proximity to the tool's arrival
+ * point — emitting the wall finish ring (and its full-radial plunge into
+ * uncut material) first whenever the tool happens to arrive near the wall
+ * (task #03afbbf1). Unstamped sets keep the greedy routing.
+ *
+ * @param {Polygon[]} outs authored-order path set
+ * @returns {Polygon[]} the same array, stamped
+ */
+function stampFarrSeq(outs) {
+    const stamp = (p, s) => {
+        p.farrSeq = s;
+        if (p.inner) {
+            for (let q of p.inner) {
+                stamp(q, s);
+            }
+        }
+    };
+    for (let i = 0; i < outs.length; i++) {
+        stamp(outs[i], i);
+    }
+    return outs;
+}
+
 async function freeAnchorRings(ctx) {
     const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt } = ctx;
 
@@ -2152,7 +2185,7 @@ async function freeAnchorRings(ctx) {
         }
     }
     if (!dom.length) {
-        return undefined;
+        { console.log(`[FARRX] z=${z} exit: dom empty`); return undefined; }
     }
     // flat:true offsets return undefined (not []) when they produce no
     // polygons, so coalesce to an empty array before use
@@ -2160,7 +2193,7 @@ async function freeAnchorRings(ctx) {
     let safe = [];
     POLY.subtract(reach, forb, safe, undefined, z, 0.01);
     if (!safe.length) {
-        return undefined;
+        { console.log(`[FARRX] z=${z} exit: safe empty`); return undefined; }
     }
 
     // sweep a ring fragment (open or closed) by the tool radius into the
@@ -2380,7 +2413,7 @@ async function freeAnchorRings(ctx) {
         rings.appendAll(kept);
     }
     if (!rings.length) {
-        return undefined;
+        { console.log(`[FARRX] z=${z} exit: rings empty`); return undefined; }
     }
 
     // wall-anchored finishing ring(s). anchored on the shadow dilated by
@@ -2532,8 +2565,15 @@ async function freeAnchorRings(ctx) {
         uncut = bad;
     }
     let uncutA = uncut.reduce((a, p) => a + p.areaDeep(), 0);
-    if (uncutA > S * S * 0.25) {
-        return undefined;
+    if (uncutA > (typeof process !== 'undefined' && process.env && process.env.FARRT ? parseFloat(process.env.FARRT) : S * S * 0.25)) {
+        if (typeof process !== 'undefined' && process.env && process.env.FARRX) {
+            for (const u of uncut) {
+                let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+                for (const q of u.points) { x0=Math.min(x0,q.x); x1=Math.max(x1,q.x); y0=Math.min(y0,q.y); y1=Math.max(y1,q.y); }
+                console.log(`[FARRXU] z=${z} A=${u.areaDeep().toFixed(3)} open=${!!u.open} n=${u.points.length} bb=x[${x0.toFixed(2)},${x1.toFixed(2)}] y[${y0.toFixed(2)},${y1.toFixed(2)}] pts=${u.points.slice(0,20).map(q=>`(${q.x.toFixed(2)},${q.y.toFixed(2)})`).join(' ')}`);
+            }
+        }
+        { console.log(`[FARRX] z=${z} exit: net fail uncutA=${uncutA}`); return undefined; }
     }
 
     if (globalThis.__FARR ?? (typeof process !== 'undefined' ? process.env.FARR : undefined)) {
@@ -2574,7 +2614,25 @@ async function freeAnchorRings(ctx) {
         }
     }
 
-    return [ ...rings, ...wall ];
+    let out = stampFarrSeq([ ...rings, ...wall ]);
+    // e2e harness channel (bin/cam-bench): the stamped authored-order set,
+    // so acceptance can match emitted paths back to their rings and verify
+    // the emitter respected the order (task #03afbbf1). gated off in the
+    // browser; the harness sets globalThis.__FARRJ before loading the worker
+    if (globalThis.__FARRJ) {
+        console.log('[FARRJ] ' + JSON.stringify({
+            z, cutz,
+            set: out.map((p, i) => ({
+                s: p.farrSeq, o: p.open ? 1 : 0,
+                // path source: family ring (M = model-true / P = pixel anchor)
+                // or wall finish piece (W) — lets acceptance verify that the
+                // whole family block precedes the wall finish block
+                w: i < rings.length ? (keptSrc[i] ?? 'M') : 'W',
+                pts: p.points.map(q => [ +q.x.toFixed(2), +q.y.toFixed(2) ])
+            }))
+        }));
+    }
+    return out;
 }
 
 function omitOuter(polys) {

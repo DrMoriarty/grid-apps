@@ -23,8 +23,16 @@
  *      model anchor correctly falling back to pixel anchoring there;
  *   6. slice time within the linear-perf budget.
  *
+ *   6. slice time within the linear-perf budget.
+ *   7. authored emission order on the free-anchor flats planes (task
+ *      #03afbbf1): the first cutting pass of each plane starts over the
+ *      verified void (free edge / central hole) or enters by a ramp from
+ *      air, and the wall finish ring is the plane's LAST pass — no
+ *      vertical plunge at full radial immersion into the wall band,
+ *      followed by useless passes over already-cleared volume.
+ *
  * usage:
- *   node bin/cam-bench/accept.mjs <model.stl> [toolDiam] [stepFraction]
+ *   node bin/cam-bench/accept.mjs <model.stl> [toolDiam] [stepoverMm]
  *
  * env: same knobs as bench.mjs (STEP/DOWN/LEAVE/ALL/INSIDE/SKIPCLEAR),
  * plus ACCEPT_Z(IP) overrides for the reference section heights.
@@ -42,9 +50,12 @@ const ROOT = path.resolve(HERE, '..', '..');
 
 const [ modelPath, toolDiamArg, stepArg ] = process.argv.slice(2);
 const toolDiam = parseFloat(toolDiamArg || '8');
+// stepover in ABSOLUTE mm — the same value is passed to the rough op's
+// `step` field below (it is not a fraction of the tool diameter)
 const stepFrac = parseFloat(stepArg || '0.5');
 const R = toolDiam / 2;
-const S = stepFrac * toolDiam;
+const S = stepFrac;
+const LEAVE = +(process.env.LEAVE || 0);
 
 if (!modelPath || !fs.existsSync(modelPath)) {
     console.error('usage: node bin/cam-bench/accept.mjs <model.stl> [toolDiam] [stepFraction]');
@@ -133,6 +144,10 @@ console.log(`accept: tool Ø${toolDiam} step ${stepFrac} (S=${S.toFixed(2)}) —
 bundle('src/kiri/run/worker.js', path.join(WORK, 'run', 'kiri-work.mjs'));
 bundle('src/kiri/run/minion.js', path.join(WORK, 'run', 'kiri-pool.mjs'));
 
+// ask the worker to export the stamped free-anchor ring sets ([FARRJ]
+// channel) for the emission-order checks below (task #03afbbf1)
+globalThis.__FARRJ = 1;
+
 globalThis.self = globalThis;
 Object.defineProperty(globalThis, 'navigator', {
     value: { hardwareConcurrency: os.cpus().length, userAgent: 'cam-bench-accept' },
@@ -169,11 +184,19 @@ globalThis.Worker = WorkerShim;
 
 // capture op-area [FAR...] diagnostics from the in-process worker
 const farLog = [];
+// stamped free-anchor sets per plane: z -> [{s, o, pts:[[x,y],...]}]
+const farrSets = new Map();
 const origLog = console.log;
 console.log = function (...args) {
     const s = args.length === 1 && typeof args[0] === 'string' ? args[0] : null;
     if (s !== null && (s.startsWith('[FAR') || s.startsWith('SLICE DONE'))) {
         farLog.push(s);
+        if (s.startsWith('[FARRJ] ')) {
+            try {
+                const rec = JSON.parse(s.slice(8));
+                farrSets.set(Math.round(rec.z * 100) / 100, rec.set);
+            } catch (e) { /* malformed harness line — order checks will fail visibly */ }
+        }
     }
     origLog.apply(console, args);
 };
@@ -373,6 +396,15 @@ const waitSlice = setInterval(() => {
     const waitPrep = setInterval(() => {
         if (!prepDone) return;
         clearInterval(waitPrep);
+        if (process.env.MILLDUMP) {
+            fs.writeFileSync(process.env.MILLDUMP, JSON.stringify(milling.map(p => ({
+                o: p.open ? 1 : 0,
+                n: p.pts.length,
+                z0: p.pts[0][2],
+                z1: p.pts[p.pts.length - 1][2],
+                pts: p.pts.map(q => [ +q[0].toFixed(3), +q[1].toFixed(3), +q[2].toFixed(3) ]),
+            }))));
+        }
         runChecks();
         process.exit(0);
     }, 250);
@@ -981,11 +1013,152 @@ function runChecks() {
         `z≈${Z_FLOOR}: ${zFloor !== undefined ? byZ.get(zFloor).length + ' polys' : 'MISSING'}, ` +
         `z≈${Z_BOT}: ${zBot !== undefined ? byZ.get(zBot).length + ' polys' : 'MISSING'}`);
     if (ok5) {
-        // the bottom plane runs the pixel anchor path (no model contour
-        // verifies there) and must still emit paths through it
+        // the bottom plane must machine through the pixel anchor path (no
+        // model contour verifies there) — but freeAnchorRings only runs (and
+        // logs) when verified void exists at the plane: with coarse down
+        // steps nothing is verified as cleared at the bottom plane and it
+        // legitimately defers to the legacy rings before any logging. so the
+        // hard requirement is: no bottom-plane record claims the model
+        // anchor; when records exist they must all be pixel fallbacks
         const fb = anchorAt(Z_BOT);
-        rec('5b pixel fallback works on bottom plane', fb.length > 0 && fb.every(v => !v) && zBot !== undefined,
-            fb.length ? `bottom modelAnchor=${fb.map(v => v ? 'YES' : 'no').join(',')}` : 'no [FAR] records');
+        rec('5b pixel fallback works on bottom plane', zBot !== undefined && fb.every(v => !v),
+            fb.length ? `bottom modelAnchor=${fb.map(v => v ? 'YES' : 'no').join(',')}` :
+                'no [FAR] records (no verified void at plane — legacy rings)');
+    }
+
+    // ---- check 7: authored emission order on the free-anchor flats planes ----
+    // (task #03afbbf1). freeAnchorRings generates the ring family in authored
+    // order — from the verified-void free edge to the wall, wall finish ring
+    // last — and stamps it (farrSeq). the stamped set is exported through the
+    // [FARRJ] channel; here each emitted milling path is matched back to its
+    // ring by point-set distance (emission rotates a ring's start point but
+    // keeps its point set), and the emission sequence must reproduce the
+    // authored order:
+    //   7a first cut = authored ring 0 (over the verified void by the
+    //      generator's own construction; ledge geometry independently
+    //      re-verified by checks 1 and 2),
+    //   7b wall finish ring = the plane's LAST pass,
+    //   7c no scrambling: the whole sequence is monotone in seq and emits
+    //      every ring of the set exactly once.
+    // greedy nearest-neighbor routing (the pre-fix emitter) fails 7a/7b/7c:
+    // it emits the wall ring first whenever the tool arrives near the wall —
+    // a vertical plunge at full radial immersion into uncut material, then
+    // useless passes over already-cleared volume (the customer defect).
+    // planes without a [FARRJ] set ran legacy/pixel rings (freeAnchorRings
+    // not applicable there — e.g. no verified void at the bottom flat with
+    // coarse down steps); their order the stamp does not govern — reported
+    // as not under test (their machining is covered by check 5)
+    const farrSetAt = (target) => {
+        for (const [ z, set ] of farrSets) {
+            if (near(z, target, 0.5)) return set;
+        }
+        return undefined;
+    };
+    // 2D extent of a point list — cut-worthiness and near-tie matching below
+    const extent2D = pts => {
+        let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+        for (const q of pts) {
+            const x = q[0], y = q[1];
+            x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+            y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+        }
+        return (x1 - x0) + (y1 - y0);
+    };
+    // match an emitted path to a reference ring: max over the path's points
+    // of the distance to the ring's nearest point (0 for a start-rotated
+    // copy of the ring; ~stepover for a neighboring ring)
+    const matchSeq = (path, refSet, refGrids, refExt) => {
+        const pext = extent2D(path.pts);
+        const cands = [];
+        for (let ri = 0; ri < refSet.length; ri++) {
+            const grid = refGrids[ri];
+            let worst = 0;
+            for (let i = 0; i < path.pts.length; i += 2) {
+                const q = path.pts[i];
+                worst = Math.max(worst, grid.nearest(q[0], q[1], 2));
+            }
+            cands.push({ ri, d: worst });
+        }
+        cands.sort((a, b) => a.d - b.d);
+        let pick = cands[0];
+        // near-tie disambiguation: adjacent fragments of one clipped ring
+        // share geometry where their point sets touch, so an emitted stub
+        // can score d≈0 against BOTH grids (strict ref-order update then
+        // lets the wrong fragment win the tie and the multiset check reads
+        // one seq twice and its neighbor zero times). an emitted path is a
+        // start-rotated copy of exactly ONE authored entry, so when the two
+        // best distances sit within quantization noise (< 0.01 mm), prefer
+        // the candidate whose 2D extent matches the cut's extent
+        if (cands.length > 1 && cands[1].d - cands[0].d < 0.01) {
+            const de = c => Math.abs(refExt[c.ri] - pext);
+            if (de(cands[1]) < de(cands[0])) {
+                pick = cands[1];
+            }
+        }
+        return { seq: refSet[pick.ri].s, d: pick.d };
+    };
+    for (const [ tag, zTarget ] of [ [ 'ledge', Z_LEDGE ], [ 'floor', Z_FLOOR ], [ 'bottom', Z_BOT ] ]) {
+        const zPlane = zList.find(z => near(z, zTarget));
+        const refSet = zPlane !== undefined ? farrSetAt(zTarget) : undefined;
+        const paths = zPlane !== undefined ? byZ.get(zPlane) : undefined;
+        if (!refSet) {
+            rec(`7 order (${tag})`, !!paths && paths.length > 0,
+                `no free-anchor set at plane (${paths ? paths.length : 0} legacy/pixel paths) — ordering N/A`);
+            continue;
+        }
+        if (!paths || !paths.length) {
+            rec(`7 order (${tag})`, false, 'milling paths not found at plane');
+            continue;
+        }
+        // cutting paths only: plunge/travel records are 2-point polylines
+        // with zero 2D extent (a vertical move at a fixed xy)
+        // cut-worthiness: the free-anchor wall ring is diced by the pixelated
+        // clip boundary into real segments and sub-0.5mm darts (the pixel
+        // matrix fringe the goal calls out). darts ride along as authored
+        // (they shave quantization remnants) but are not "passes" under the
+        // order checks — the comparison runs on real cuts (>= 0.5mm of 2D
+        // travel) on BOTH sides, so the knife-edge threshold cannot flip
+        // individual darts between the compared sets
+        const MIN_CUT = 0.5;
+        const cuts = paths.filter(p => extent2D(p.pts) > MIN_CUT);
+        // the reference set may contain sub-threshold open fragments too
+        // (wall-band slivers from clipping the family against the pixel
+        // matrix / handle contours). they are emitted as authored but are
+        // not "cuts" under the same threshold, so the order comparison
+        // runs against the set's cut-worthy entries only
+        const refCuts = refSet.filter(r => extent2D(r.pts) > MIN_CUT);
+        // per-ring point grids for matching (+ extents for near-tie picks)
+        const refGrids = refCuts.map(r => makeGrid(r.pts.map(q => [ q[0], q[1] ]), 1));
+        const refExt = refCuts.map(r => extent2D(r.pts));
+        const matched = cuts.map(p => matchSeq(p, refCuts, refGrids, refExt));
+        const unmatched = matched.filter(m => m.d > 0.25).length;
+        const seqs = matched.map(m => m.seq);
+        const minSeq = Math.min(...refCuts.map(r => r.s));
+        const maxSeq = Math.max(...refCuts.map(r => r.s));
+        const monotone = seqs.every((s, i) => i === 0 || s >= seqs[i - 1]);
+        // multiset equality: every cut-worthy ring emitted exactly once
+        // (fragments of one ring share its seq and must appear consecutively)
+        const want = refCuts.map(r => r.s).sort((a, b) => a - b).join(',');
+        const got = seqs.slice().sort((a, b) => a - b).join(',');
+        rec(`7a first cut is authored ring 0 (${tag})`, seqs[0] === minSeq,
+            `first path matched seq ${seqs[0]} (authored first ${minSeq})`);
+        // wall block last: the generator orders family rings first, wall
+        // finish pieces after ([...rings, ...wall] + stampFarrSeq), so the
+        // plane's last real cut must be a wall piece — and (with 7c's
+        // monotonicity) every family ring precedes every wall piece
+        const wallAfterFamily = seqs.every((s, i) =>
+            !(refCuts.find(r => r.s === s)?.w !== 'W') ||
+            seqs.slice(0, i).every(q => refCuts.find(r => r.s === q)?.w !== 'W'));
+        rec(`7b wall finish ring last (${tag})`,
+            seqs[seqs.length - 1] === maxSeq &&
+            refCuts.find(r => r.s === maxSeq)?.w === 'W',
+            `last path matched seq ${seqs[seqs.length - 1]} (authored last ${maxSeq}, ` +
+            `src ${refCuts.find(r => r.s === maxSeq)?.w ?? '?'})`);
+        rec(`7c emitted order monotone and complete (${tag})`,
+            unmatched === 0 && monotone && want === got && wallAfterFamily,
+            `${cuts.length} cuts vs ${refCuts.length} rings, ${unmatched} unmatched, ` +
+            `monotone=${monotone}, family-before-wall=${wallAfterFamily}, ` +
+            `multiset ${want === got ? 'equal' : 'DIFFERS'}`);
     }
 
     // ---- check 6: slice perf ----

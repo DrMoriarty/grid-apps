@@ -818,7 +818,7 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
                 // for depth, collapse parent to 1 or 0 (has, missing)
                 // emitter flags must survive the clone (revolution-0
                 // spiral scoping, finish-ring engage detection)
-                if (depthFirst) { poly = poly.clone(false, [ 'spiral', 'finish_ring' ]); poly.parent = child ? 1 : 0 }
+                if (depthFirst) { poly = poly.clone(false, [ 'spiral', 'finish_ring', 'farrSeq' ]); poly.parent = child ? 1 : 0 }
                 // stamp the depth-level engage key used by polyEmit's
                 // order-based engage decisions. polys of one slice share
                 // the slice z, which stays valid across the leave_z point
@@ -835,17 +835,41 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
             POLY.setWinding(c, !cutdir);
 
             if (depthFirst) {
-                // re-nest layer polys and add to depth stack
-                polys = POLY.nest(polys,true,true);
-                polys.tool_shadow = POLY.flatten(slice.tool_shadow.clone(true));
-                depthData.push(polys);
+                // authored-order sets (free-anchor ring families,
+                // stampFarrSeq in op-area.js) must keep their authored
+                // emission order: free-edge ring first (over verified
+                // void), wall finish ring last, spiral ahead of its
+                // finish ring (task #03afbbf1). the depth-first nest +
+                // descend + emit_flat machinery re-orders by nesting,
+                // area and greedy proximity — destroying the stamp — so
+                // fully-stamped slices bypass it and emit flat, in
+                // stamp order, on their own layer
+                if (polys.length && polys.every(poly => poly.farrSeq !== undefined)) {
+                    polys.sort((a,b) => a.farrSeq - b.farrSeq);
+                    setTravelBoundary(slice.tool_shadow.clone(true));
+                    poly2polyEmit(polys, printPoint, (poly, index, count) => polyEmit(poly, index, count === 1), { swapdir: false, inOrder: true });
+                    newLayer();
+                } else {
+                    // re-nest layer polys and add to depth stack
+                    polys = POLY.nest(polys,true,true);
+                    polys.tool_shadow = POLY.flatten(slice.tool_shadow.clone(true));
+                    depthData.push(polys);
+                }
             } else {
                 // if not depth first, output the polys in slice order
                 setTravelBoundary(slice.tool_shadow.clone(true));
                 // poly2polyEmit passes a 1-based counter as 3rd arg; polyEmit
                 // expects a boolean engage flag — only the first cut of this
                 // layer gets the engage feed
-                poly2polyEmit(polys, printPoint, (poly, index, count) => polyEmit(poly, index, count === 1), { swapdir: false });
+                // authored-order sets (stampFarrSeq in op-area.js) emit in
+                // stamp order (free edge -> wall, spiral -> finish ring)
+                // instead of greedy nearest-neighbor (task #03afbbf1);
+                // unstamped sets keep the greedy routing
+                let ordered = polys.length > 1 && polys.every(p => p.farrSeq !== undefined);
+                if (ordered) {
+                    polys.sort((a, b) => a.farrSeq - b.farrSeq);
+                }
+                poly2polyEmit(polys, printPoint, (poly, index, count) => polyEmit(poly, index, count === 1), { swapdir: false, inOrder: ordered });
                 newLayer();
             }
             progress(++total, slices.length);
@@ -878,10 +902,27 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
 
         for (;;) {
             let wpp = getWidgetPrintPoint();
-            let poly = flat.filter(poly => !poly.marked)
-                .map(p => p.findClosestPointTo(wpp))
-                .sort((a,b) => a.distance - b.distance)
-                .map(rec => rec.poly)[0];
+            let cands = flat.filter(poly => !poly.marked);
+            let poly;
+            if (cands.length && cands.every(p => p.farrSeq !== undefined)) {
+                // authored order (stampFarrSeq, task #03afbbf1): free-anchor
+                // ring families must cut from the verified-void free edge to
+                // the wall (finish ring last), and stitched spirals must cut
+                // ahead of their finish ring. greedy nearest-neighbor routing
+                // here would emit the wall ring first whenever the tool
+                // arrives near the wall — a full-radial plunge into uncut
+                // material followed by useless passes over cleared volume.
+                // ring start rotation toward the current tool position is
+                // still applied downstream (polyEmit CLOSEST_TO_PP), so only
+                // the ring ORDER is authored, not the ring start points
+                poly = cands.sort((a, b) => a.farrSeq - b.farrSeq)[0];
+            } else {
+                // greedy nearest-neighbor fallback for unstamped sets
+                poly = cands
+                    .map(p => p.findClosestPointTo(wpp))
+                    .sort((a,b) => a.distance - b.distance)
+                    .map(rec => rec.poly)[0];
+            }
 
             if (poly) {
                 let output = [];

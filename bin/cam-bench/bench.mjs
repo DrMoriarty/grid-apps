@@ -58,14 +58,17 @@ function findEsbuild() {
 const WORK = path.join(os.tmpdir(), 'cam-bench');
 fs.rmSync(WORK, { recursive: true, force: true });
 fs.mkdirSync(path.join(WORK, 'wasm'), { recursive: true });
+// emscripten's manifold module resolves '../wasm/manifold.wasm' relative
+// to cwd: bundle into WORK/run so that path lands on WORK/wasm
+fs.mkdirSync(path.join(WORK, 'run'), { recursive: true });
 for (const f of fs.readdirSync(path.join(ROOT, 'src', 'wasm'))) {
     if (f.endsWith('.wasm')) {
         fs.copyFileSync(path.join(ROOT, 'src', 'wasm', f), path.join(WORK, 'wasm', f));
     }
 }
-fs.copyFileSync(path.join(HERE, 'pool-shim.mjs'), path.join(WORK, 'pool-shim.mjs'));
+fs.copyFileSync(path.join(HERE, 'pool-shim.mjs'), path.join(WORK, 'run', 'pool-shim.mjs'));
 process.env.CAM_BENCH_WORK = WORK;
-process.chdir(WORK);
+process.chdir(path.join(WORK, 'run'));
 
 const ESBUILD = findEsbuild();
 if (!ESBUILD) {
@@ -95,8 +98,8 @@ function bundle(entry, outfile) {
 }
 
 console.log('cam-bench: bundling worker + minion...');
-bundle('src/kiri/run/worker.js', path.join(WORK, 'kiri-work.mjs'));
-bundle('src/kiri/run/minion.js', path.join(WORK, 'kiri-pool.mjs'));
+bundle('src/kiri/run/worker.js', path.join(WORK, 'run', 'kiri-work.mjs'));
+bundle('src/kiri/run/minion.js', path.join(WORK, 'run', 'kiri-pool.mjs'));
 
 // ---- shims (must precede the worker bundle import) ----
 globalThis.self = globalThis;
@@ -123,7 +126,7 @@ globalThis.fetch = function (url) {
 // worker_threads backed Worker shim for the minion pool
 class WorkerShim {
     constructor(url, opts) {
-        const w = new NodeWorker(path.join(WORK, 'pool-shim.mjs'));
+        const w = new NodeWorker(path.join(WORK, 'run', 'pool-shim.mjs'));
         this.onmessage = null;
         this.onerror = null;
         this.onmessageerror = null;
@@ -149,7 +152,7 @@ class WorkerShim {
 globalThis.Worker = WorkerShim;
 
 // ---- import worker bundle (sets self.onmessage = dispatch) ----
-await import(pathToFileURL(path.join(WORK, 'kiri-work.mjs')).href);
+await import(pathToFileURL(path.join(WORK, 'run', 'kiri-work.mjs')).href);
 
 // ---- load model (binary STL), seat it on the bed like the CAM app ----
 function loadSTL(p) {

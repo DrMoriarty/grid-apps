@@ -895,6 +895,13 @@ function cutTabs(tabs, offset) {
             if (poly.finish_ring) {
                 heal.forEach(hp => hp.finish_ring = true);
             }
+            // carry the authored emission order through the rebuild (see
+            // stampFarrSeq in op-area.js): fragments of one source path
+            // share its seq, so the emitter keeps them contiguous and in
+            // the authored group order
+            if (poly.farrSeq !== undefined) {
+                heal.forEach(hp => hp.farrSeq = poly.farrSeq);
+            }
             // carry the spiral revolution-0 engage markers through the
             // rebuild (task #cfca80a4): fragment points are clipper copies
             // of the source spiral's points, so each is matched back to
