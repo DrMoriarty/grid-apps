@@ -1,1 +1,1 @@
-/Users/vasiliy.makarov/pr/grid-apps/node_modules/earcut/src/earcut.js
+../../node_modules/earcut/src/earcut.js

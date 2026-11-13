@@ -1,1 +1,1 @@
-/Users/vasiliy.makarov/pr/grid-apps/node_modules/base64-js/base64js.min.js
+../../node_modules/base64-js/base64js.min.js

@@ -1,1 +1,1 @@
-/Users/vasiliy.makarov/pr/grid-apps/node_modules/manifold-3d/manifold.js
+../../node_modules/manifold-3d/manifold.js

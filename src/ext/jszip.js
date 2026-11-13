@@ -1,1 +1,1 @@
-/Users/vasiliy.makarov/pr/grid-apps/node_modules/jszip/dist/jszip.js
+../../node_modules/jszip/dist/jszip.js
