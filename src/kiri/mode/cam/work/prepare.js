@@ -775,10 +775,13 @@ export async function prepare_one(widget, settings, print, firstPoint, update) {
 
         layerOut.mode = currentOp;
         layerOut.spindle = spindle;
+        // move records (emit=0) carry zero speed: export upgrades them to
+        // the machine rapid rate, and the animators show G0 using their
+        // fixed fallback pace instead of feed-rate playback
         layerPush(
             point,
             emit,
-            rate,
+            emit ? rate : 0,
             tool,
             { center }
         );
