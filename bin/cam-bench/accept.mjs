@@ -36,6 +36,20 @@
  *   8. the floor rings around the central hole are model-true: per-path
  *      MAD of the point-to-hole-contour distance (model section just
  *      below the floor plane) < 0.1 mm — pixel-fringe rings fail.
+ *   9. every top-plane path is model-true (task #c7a102e5): per-path MAD
+ *      to the nearest model contour < 0.1 mm;
+ *   10. traversal chaining within broken ring levels (task #5f60fe5a):
+ *      each offset level's fragments emit as a head-to-tail chain — the
+ *      harness re-runs the generator's level solver over the authored
+ *      [FARRJ] set and holds the emitted order to it, plus audits the
+ *      emitted-orientation prediction. self-relative: no travel budgets.
+ *
+ * geometry controls printed every run:
+ *   FARRHASH — order/direction/rotation-invariant multiset hash of the
+ *   authored free-anchor points; strict cross-build equality control
+ *   (an order-only change hashes equal).
+ *   CAMHASH — the same over emitted cutting points; coarse same-order
+ *   tripwire (the emitter's start rotations respond to a new order).
  *
  * usage:
  *   node bin/cam-bench/accept.mjs <model.stl> [toolDiam] [stepFraction]
@@ -663,6 +677,71 @@ function runChecks() {
         results.push({ name, pass, detail });
         origLog(`  [${pass ? 'PASS' : 'FAIL'}] ${name}: ${detail}`);
     };
+
+    // ---- geometry checksums (README "Determinism check"). two controls:
+    // CAMHASH — order-, direction- and rotation-invariant multiset hash of
+    // the emitted CUTTING points (2D extent > 0.5 mm; pure-vertical
+    // plunge/retract records legitimately differ when a better order
+    // removes travel plunges between consecutive paths). COARSE by nature:
+    // the emitter reacts to a new order (closed-ring start rotation toward
+    // the new tool position, arc fitting from the rotated start), so an
+    // order-changing fix shifts a few emitted points by 1-2 mm along
+    // unchanged contours — CAMHASH is a same-order tripwire; FARRHASH
+    // (below) is the strict cross-build geometry control for free-anchor
+    // work: the same invariant multiset hash over the AUTHORED generator
+    // output ([FARRJ], before any emitter effect). task #5f60fe5a
+    // acceptance: the fragment-chaining fix must not move a single
+    // authored point — FARRHASH must be equal across the builds
+    {
+        let h1 = 0x811c9dc5;
+        const fnv = (s) => {
+            for (let i = 0; i < s.length; i++) {
+                h1 ^= s.charCodeAt(i);
+                h1 = Math.imul(h1, 0x01000193) >>> 0;
+            }
+        };
+        const pts = [];
+        let nCut = 0, nVert = 0;
+        for (const p of milling) {
+            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            for (const q of p.pts) {
+                x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]);
+                y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]);
+            }
+            if ((x1 - x0) + (y1 - y0) <= 0.5) { nVert++; continue; }
+            nCut++;
+            // 0.01 mm quantization: an order change may shift unrelated
+            // depth-plane points by ~0.001 mm through float accumulation
+            // in downstream start-alignment code — not a geometry change;
+            // any real move >= 0.01 mm still flips the hash
+            for (const q of p.pts) pts.push(`${q[0].toFixed(2)},${q[1].toFixed(2)},${q[2].toFixed(2)}`);
+        }
+        pts.sort();
+        for (const s of pts) fnv(s + ';');
+        origLog(`CAMHASH ${h1.toString(16)} (${pts.length} cutting pts, ${nCut} cut paths, ${nVert} vertical records)`);
+    }
+    // ---- FARRHASH: the same invariant multiset hash over the AUTHORED
+    // free-anchor ring sets ([FARRJ], generator output before any
+    // emission-side effect) — isolates generator geometry from emitter
+    // bookkeeping
+    {
+        let h1 = 0x811c9dc5;
+        const fnv = (s) => {
+            for (let i = 0; i < s.length; i++) {
+                h1 ^= s.charCodeAt(i);
+                h1 = Math.imul(h1, 0x01000193) >>> 0;
+            }
+        };
+        const pts = [];
+        for (const set of farrSets.values()) {
+            for (const r of set) {
+                for (const q of r.pts) pts.push(`${r.w}${r.o}:${q[0].toFixed(3)},${q[1].toFixed(3)}`);
+            }
+        }
+        pts.sort();
+        for (const s of pts) fnv(s + ';');
+        origLog(`FARRHASH ${h1.toString(16)} (${pts.length} authored pts)`);
+    }
 
     // ---- reference contours from the STL ----
     const loopsUpper = sectionLoops(vertices, Z_UPPER + 1e-3);
@@ -1379,6 +1458,223 @@ function runChecks() {
                 `${holeRings.length} hole-band rings, worst MAD=${worst.mad.toFixed(3)} mm ` +
                 `(med standoff ${worst.med.toFixed(2)}, ${worst.n} pts)`);
         }
+    }
+
+    // ---- check 10: traversal chaining within broken ring levels (task
+    // #5f60fe5a). a ring contour broken into open fragments by the
+    // safe-zone clip must emit as a head-to-tail chain: freeAnchorRings
+    // orders each offset level's fragments before the farrSeq stamp and
+    // the inOrder emitter honors it. self-relative criterion (works on
+    // any profile, no hardcoded travel budgets): for every family level,
+    // the harness re-runs the same greedy head-to-tail chain the
+    // generator performs — over the fragments' EMITTED orientations
+    // (read off the matched emitted cuts; the downstream winding
+    // normalization fixes each open fragment's direction, so the chain
+    // has no reversal freedom), with the cursor seeded by the previous
+    // level's emitted end — and compares the emitted order's
+    // within-level link travel against that chained optimum. the
+    // un-chained clipper order (80-95mm cross-cavity jumps between
+    // fragments of ONE ring) loses by an order of magnitude; a single
+    // link additionally may not exceed the chain's own longest link by
+    // more than the stepover. natural contour breaks the engagement
+    // filter amputated (sections a previous ring already removed,
+    // ~10-15mm here) appear identically in both orders and pass
+    for (const [ tag, zTarget ] of [ [ 'top', Z_TOP ], [ 'ledge', Z_LEDGE ], [ 'floor', Z_FLOOR ] ]) {
+        const zPlane = zList.find(z => near(z, zTarget));
+        const refSet = zPlane !== undefined ? farrSetAt(zTarget) : undefined;
+        const paths = zPlane !== undefined ? byZ.get(zPlane) : undefined;
+        if (!refSet) {
+            rec(`10 level chaining (${tag})`, true,
+                `no free-anchor set at plane (${paths ? paths.length : 0} legacy/pixel paths) — chaining N/A`);
+            continue;
+        }
+        if (!paths || !paths.length) {
+            rec(`10 level chaining (${tag})`, false, 'milling paths not found at plane');
+            continue;
+        }
+        const MIN_CUT10 = 0.5;
+        const cuts10 = paths.filter(p => extent2D(p.pts) > MIN_CUT10);
+        const refCuts10 = refSet.filter(r => extent2D(r.pts) > MIN_CUT10);
+        const grids10 = refCuts10.map(r => makeGrid(r.pts.map(q => [ q[0], q[1] ]), 1));
+        const exts10 = refCuts10.map(r => extent2D(r.pts));
+        const mseq10 = cuts10.map(p => matchSeq(p, refCuts10, grids10, exts10));
+        const fragAt10 = s => refCuts10.find(r => r.s === s);
+        // harness-side simulation of the generator's chain (freeAnchorRings):
+        // authored family fragments per level in seq order, orientations
+        // PREDICTED exactly as the generator predicts them (an open
+        // fragment's emitted direction is fixed by the downstream winding
+        // normalization — flip iff its shoelace sign differs from the
+        // effective emitted winding; a closed ring's start is rotated to
+        // the point nearest the cursor), cursor propagated level to level
+        // and undefined before the first (the generator has no plane
+        // arrival point either). the simulated chain is the reference the
+        // emitted order is held to; a mismatch localizes to a flipped
+        // orientation prediction or a scrambled order
+        const shoelaceCW = pts => {
+            let a = 0;
+            for (let i = 0; i < pts.length; i++) {
+                const p = pts[i], q = pts[(i + 1) % pts.length];
+                a += (q[0] - p[0]) * (q[1] + p[1]);
+            }
+            return a > 0;
+        };
+        const OP10 = settings.process.ops[0];
+        const CUTDIR10 = OP10.ov_conv === undefined ?
+            OP10.direction !== 'climb' : OP10.ov_conv;
+        const predEnds = r => {
+            const flip = !!r.o && (shoelaceCW(r.pts) !== CUTDIR10);
+            return flip ? { st: r.pts[r.pts.length - 1], en: r.pts[0] } :
+                { st: r.pts[0], en: r.pts[r.pts.length - 1] };
+        };
+        const nearestPt = (pts, cur) => {
+            let bp = pts[0], bd = Infinity;
+            for (const p of pts) {
+                const d = Math.hypot(p[0] - cur[0], p[1] - cur[1]);
+                if (d < bd) { bd = d; bp = p; }
+            }
+            return bp;
+        };
+        const levelsAll = new Map();
+        for (const r of refSet) {
+            if (r.w === 'W' || r.k === undefined || r.k < 0) continue;
+            if (!levelsAll.has(r.k)) levelsAll.set(r.k, []);
+            levelsAll.get(r.k).push(r);
+        }
+        // mirror of the generator's level solver: canonical candidate
+        // order (same geometric key), exact permutation search up to 8
+        // fragments (cost = approach from the cursor + head-to-tail
+        // links), greedy nearest-emitted-start fallback above that.
+        // per level: total within-chain link travel and the longest link
+        const candKeyH = r => `${r.pts.length}|` +
+            `${r.pts[0][0].toFixed(2)},${r.pts[0][1].toFixed(2)},` +
+            `${r.pts[r.pts.length - 1][0].toFixed(2)},${r.pts[r.pts.length - 1][1].toFixed(2)}`;
+        const walkLevel = (perm, cur) => {
+            let cost = 0;
+            for (const cd of perm) {
+                const st = cd.open ? cd.st :
+                    (cur ? nearestPt(cd.r.pts, cur) : cd.en);
+                if (cur) cost += Math.hypot(st[0] - cur[0], st[1] - cur[1]);
+                cur = cd.open ? cd.en : st;
+            }
+            return { cost, end: cur };
+        };
+        const solveLevel = (frags, cur) => {
+            const cands = frags.slice()
+                .sort((a, b) => candKeyH(a) < candKeyH(b) ? -1 :
+                    candKeyH(a) > candKeyH(b) ? 1 : 0)
+                .map(r => ({ r, ...predEnds(r), open: !!r.o }));
+            const openCount = cands.filter(cd => cd.open).length;
+            if (openCount > 1 && cands.length <= 6) {
+                let best = null, bestCost = Infinity;
+                const permute = (arr, l) => {
+                    if (l === arr.length) {
+                        const { cost, end } = walkLevel(
+                            arr.map(i => cands[i]), cur);
+                        if (cost < bestCost - 1e-9) {
+                            bestCost = cost;
+                            best = { order: arr.map(i => cands[i]), end };
+                        }
+                        return;
+                    }
+                    for (let i = l; i < arr.length; i++) {
+                        [arr[l], arr[i]] = [arr[i], arr[l]];
+                        permute(arr, l + 1);
+                        [arr[l], arr[i]] = [arr[i], arr[l]];
+                    }
+                };
+                permute(cands.map((_, i) => i), 0);
+                return best;
+            }
+            const left = cands.slice();
+            let order = [], c = cur;
+            while (left.length) {
+                let bi = 0, bd = Infinity;
+                for (let i = 0; i < left.length; i++) {
+                    const st = left[i].open ? left[i].st :
+                        (c ? nearestPt(left[i].r.pts, c) : left[i].en);
+                    const d = c ? Math.hypot(st[0] - c[0], st[1] - c[1]) : 0;
+                    if (d < bd) { bd = d; bi = i; }
+                }
+                const cd = left.splice(bi, 1)[0];
+                order.push(cd);
+                c = cd.open ? cd.en : (c ? nearestPt(cd.r.pts, c) : cd.en);
+            }
+            return { order, end: c };
+        };
+        const optByLevel = new Map();
+        let optTotal = 0, simCursor;
+        for (const [ kk, frags ] of levelsAll) {
+            const sol = solveLevel(frags, simCursor);
+            // within-chain links only: the head's approach link is the
+            // level-to-level handoff — excluded from both sides
+            let total = 0, maxLink = 0, cur = simCursor, first = true;
+            for (const cd of sol.order) {
+                const st = cd.open ? cd.st :
+                    (cur ? nearestPt(cd.r.pts, cur) : cd.en);
+                if (cur && !first) {
+                    const d = Math.hypot(st[0] - cur[0], st[1] - cur[1]);
+                    total += d;
+                    maxLink = Math.max(maxLink, d);
+                }
+                first = false;
+                cur = cd.open ? cd.en : st;
+            }
+            simCursor = sol.end;
+            optByLevel.set(kk, { total, maxLink });
+            optTotal += total;
+        }
+        // orientation-prediction audit: every matched open cut must start
+        // where the simulation predicted (the emitted direction is fixed
+        // by the winding normalization — a mismatch means the generator's
+        // predicted winding diverged from the real one, and its chain was
+        // built on wrong starts)
+        let flipMismatch = 0, flipChecked = 0;
+        for (let i = 0; i < cuts10.length; i++) {
+            const f = fragAt10(mseq10[i].seq);
+            if (!f || !f.o || f.k === undefined || f.k < 0 || mseq10[i].d > 0.25) continue;
+            flipChecked++;
+            const ee = predEnds(f);
+            if (Math.hypot(cuts10[i].pts[0][0] - ee.st[0], cuts10[i].pts[0][1] - ee.st[1]) > 0.05) {
+                flipMismatch++;
+            }
+        }
+        // emitted within-level links: consecutive cutting paths matched to
+        // fragments of the SAME family level
+        const linkDist = (a, b) => {
+            const pe = a.pts[a.pts.length - 1], ns = b.pts[0];
+            return Math.hypot(ns[0] - pe[0], ns[1] - pe[1]);
+        };
+        let emittedTotal = 0, pairs = 0, skipped = 0, worst = null;
+        const linkDbg = process.env.ACCEPT_LINKS ? [] : null;
+        for (let i = 1; i < cuts10.length; i++) {
+            const fa = fragAt10(mseq10[i - 1].seq), fb = fragAt10(mseq10[i].seq);
+            if (!fa || !fb || mseq10[i - 1].d > 0.25 || mseq10[i].d > 0.25) {
+                skipped++;
+                continue;
+            }
+            if (fa.w === 'W' || fb.w === 'W' || fa.k !== fb.k) {
+                continue; // wall piece or level-to-level handoff
+            }
+            const d = linkDist(cuts10[i - 1], cuts10[i]);
+            emittedTotal += d;
+            pairs++;
+            if (linkDbg) linkDbg.push(`k${fa.k}:s${fa.s}->s${fb.s}=${d.toFixed(1)}`);
+            const opt = optByLevel.get(fa.k);
+            if (!opt) continue;
+            const cap = opt.maxLink + 2 * S + 0.5;
+            if (d > cap && (!worst || d > worst.d)) {
+                worst = { d, cap, k: fa.k, i };
+            }
+        }
+        const ok10 = pairs > 0 && !worst && !flipMismatch &&
+            emittedTotal <= optTotal + S + 1;
+        if (linkDbg) origLog(`  [10-links ${tag}] ` + linkDbg.join(' '));
+        rec(`10 level chaining (${tag})`, ok10,
+            `${pairs} within-level links, emitted link travel ${emittedTotal.toFixed(1)} mm vs ` +
+            `simulated chain ${optTotal.toFixed(1)} mm` +
+            (worst ? `, worst link ${worst.d.toFixed(1)} mm > cap ${worst.cap.toFixed(1)} mm (level k=${worst.k}, cut #${worst.i})` : '') +
+            (flipMismatch ? `, ${flipMismatch}/${flipChecked} emitted starts off the predicted orientation` : '') +
+            (skipped ? `, ${skipped} cuts skipped (unmatched/wall/handoff)` : ''));
     }
 
     // ---- check 6: slice perf ----

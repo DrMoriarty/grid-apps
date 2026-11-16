@@ -76,23 +76,50 @@ coverage net) — the ring loop is where clipper-heavy work lives.
 
 ## Determinism check (same polygons before/after a change)
 
-Add a temporary checksum of the emitted camLines to the worker's slice
-completion (`src/kiri/run/worker.js`, `slice` dispatch, before
-`send.done`) and send it in a `send.data({...})` message:
+accept.mjs prints two geometry checksums every run:
 
-```js
-let h1 = 0x811c9dc5;
-const fnv = (s) => { for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = Math.imul(h1, 0x01000193) >>> 0; } };
-for (const sl of widget.slices)
-    for (const p of (sl.camLines || [])) {
-        fnv(`${p.length}${p.open ? 'o' : 'c'}`);
-        for (const pt of p.points) fnv(`${pt.x.toFixed(4)},${pt.y.toFixed(4)},${pt.z.toFixed(4)}`);
-    }
-send.data({ camhash: h1 });
-```
+- `FARRHASH` — order-, direction- and rotation-invariant multiset hash
+  (FNV-1a over the sorted rounded point set) of the AUTHORED free-anchor
+  ring sets, captured from the `[FARRJ]` worker channel before any
+  emitter effect. The strict cross-build control for free-anchor work:
+  a change that only reorders paths, reverses fragments or re-rotates
+  closed ring starts hashes EQUAL; any moved/added/removed authored
+  point flips it. Task #5f60fe5a acceptance: the fragment chaining fix
+  must keep FARRHASH identical across builds.
+- `CAMHASH` — the same invariant hash over the emitted CUTTING points
+  (pure-vertical plunge/retract records excluded). COARSE: the emitter
+  reacts to a new path order (closed-ring start rotation toward the new
+  tool position, arc fitting from the rotated start), so an
+  order-changing fix shifts a few emitted points by 1-2 mm along
+  unchanged contours. Use it as a same-order tripwire, not for
+  cross-build equality — FARRHASH is the cross-build geometry control.
 
-Print it bench-side in the `postMessage` handler (`msg.data.camhash`)
-and compare across the builds you want to diff.
+`ACCEPT_LINKS=1` prints the per-link within-level travel breakdown of
+check 10 (see below).
+
+## Acceptance checks (accept.mjs)
+
+Runs the 8 geometric/order checks of the rough-flats free-edge anchor
+work (goal #7434434b), plus:
+
+- check 9: every top-plane path model-true (task #c7a102e5);
+- check 10: traversal chaining within broken ring levels (task
+  #5f60fe5a). A ring contour broken into open fragments by the
+  safe-zone clip must emit as a head-to-tail chain: freeAnchorRings
+  orders each offset level's fragments (exact permutation search of the
+  predicted emitted orientations for levels with >= 2 open fragments
+  and <= 8 candidates, greedy nearest-start fallback) before the
+  farrSeq stamp, and the inOrder emitter honors it. The harness
+  re-runs the same solver over the authored `[FARRJ]` set (canonical
+  candidate key + identical tie-breaking) and holds the emitted order
+  to it: total within-level link travel within one stepover of the
+  solved chain, no single link above the chain's own longest link +
+  2x stepover, and every emitted open-fragment start on its predicted
+  orientation (the downstream winding normalization fixes each open
+  fragment's direction, so the generator must chain the orientation it
+  will actually be emitted with). Self-relative — no travel budgets;
+  the un-chained clipper order (80-95 mm cross-cavity jumps between
+  fragments of ONE ring) fails by an order of magnitude.
 
 ## Case study: slice time 19x on Ø6 vs Ø8 (2026-11)
 

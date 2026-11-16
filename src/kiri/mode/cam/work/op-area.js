@@ -398,7 +398,17 @@ class OpArea extends CamOp {
                             // left — at most one rough step-down
                             // (base_util.lerp clamps the step to `down`)
                             // above the cut plane
-                            skinMax: Math.max(0, down || 0)
+                            skinMax: Math.max(0, down || 0),
+                            // emitted winding for open family fragments
+                            // (fragment chaining, task #5f60fe5a): prepare's
+                            // pocket() normalizes every camLine to
+                            // op.ov_conv — undefined in raw-settings runs,
+                            // where its flip-all pass inverts the emit
+                            // site's setWinding(direction === 'climb'), so
+                            // the effective emitted winding there is the
+                            // opposite of climb
+                            cutdir: op.ov_conv === undefined ?
+                                direction !== 'climb' : op.ov_conv
                         });
                         if (alt) outs = alt;
                     }
@@ -2087,8 +2097,33 @@ function stampFarrSeq(outs) {
     return outs;
 }
 
+// canonical geometric key of a fragment handed to the free-anchor chain
+// solver: rounded first/last point coords + point count. stable across
+// the generator (full-precision points) and the e2e harness ([FARRJ]
+// export rounded to 0.01 mm), so both enumerate candidate permutations
+// in the same order and tie-break identically
+function candKey(f) {
+    const p0 = f.points[0], p1 = f.points[f.points.length - 1];
+    return `${f.points.length}|${p0.x.toFixed(2)},${p0.y.toFixed(2)},` +
+        `${p1.x.toFixed(2)},${p1.y.toFixed(2)}`;
+}
+
+// point of polygon `f` nearest to point `p` (2D) — the emitter's
+// closed-ring start-rotation target
+function nearestPointOn(f, p) {
+    let bp = f.points[0], bd = Infinity;
+    for (const q of f.points) {
+        const d = p.distTo2D(q);
+        if (d < bd) {
+            bd = d;
+            bp = q;
+        }
+    }
+    return bp;
+}
+
 async function freeAnchorRings(ctx) {
-    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt, inside, silhouette, skinMax } = ctx;
+    const { stockModel, clip, clipBase, shadow, tipz, cutz, z, R, L, S, firstOff, finishCut, offopt, steps, shadowAt, inside, silhouette, skinMax, cutdir } = ctx;
 
     // axis-safe zone: within tool reach of the clip, clear of the shadow
     // dilated by the tool radius + wall allowance
@@ -2430,8 +2465,14 @@ async function freeAnchorRings(ctx) {
     // keeping each ring's fresh band at ~min(S, R)
     let rings = [];
     let keptSrc = []; // per-ring anchor source tag (V=void group, M=mat group)
+    let keptK = []; // per-ring family level (offset index) — [FARRJ] only
     let removed = []; // swept fresh material of emitted rings so far
     let minEng = S * S * 0.001; // ~zero fresh-material threshold
+    // end point of the previously emitted ring fragment: the tool's arrival
+    // position for the next level's chain start (see the chain step below).
+    // unknown before the first level, which keeps the clipper head fragment
+    // as its chain head
+    let ringCursor;
     let c = Math.min(S - R, 0);
     for (let k = 0; k < steps; k++, c += S) {
         let raw = POLY.offset(anchor, [ c ], { count: 1, flat: true, z, ...offopt }) ?? [];
@@ -2594,6 +2635,7 @@ async function freeAnchorRings(ctx) {
             }
             kept.push(frag);
             keptSrc.push(fragSrc[fi]);
+            keptK.push(k);
             keptRaw.appendAll(fh);
             fresh.appendAll(feng);
         }
@@ -2613,6 +2655,136 @@ async function freeAnchorRings(ctx) {
             const srcs = {};
             for (const s of keptSrc) srcs[s] = (srcs[s] || 0) + 1;
             console.log(`[FARRC] k=${k} c=${c.toFixed(2)} raw=${raw.length} frags=${frags.length} kept=${kept.length} src=${JSON.stringify(srcs)} engA=${engA.toFixed(3)} pts=${kept.reduce((a, f) => a + f.points.length, 0)}`);
+        }
+        // traversal-order this level's kept fragments before the farrSeq
+        // stamp (task #5f60fe5a). `kept` arrives in clipper output order,
+        // and a ring contour broken into open fragments by the safe-zone
+        // clip then emits scrambled: stampFarrSeq indexes this array, the
+        // emitter honors it (inOrder mode), and fragments of ONE ring get
+        // separated by long air travels across the already-cleared cavity.
+        // the chain must use each fragment's EMITTED orientation: the
+        // winding normalizations downstream (the emit site's setWinding to
+        // direction==='climb', then prepare pocket()'s setWinding to
+        // op.ov_conv — an undefined cutdir flips every open path) fix an
+        // open fragment's emitted direction regardless of the order
+        // authored here, so reversing a fragment in the chain is futile —
+        // the emitted orientation is a function of the fragment geometry
+        // alone. predict it (flip iff isClockwise() !== cutdir) and chain
+        // the emitted starts; a closed ring's start is rotated to the
+        // point nearest the tool position by the emitter and the cut
+        // exits there. the order minimizes the level's link travel (the
+        // approach from the previous level's exit + head-to-tail links):
+        // exact permutation search while tractable — a contour broken by
+        // the safe-zone clip splits into few fragments, and greedy
+        // nearest-start is myopic exactly there (entering a two-fragment
+        // level at the fragments' shared junction forces a full-width
+        // jump to reach the second fragment's far start, where entering
+        // at the far start chains through the junction for free). only
+        // the order INSIDE a level (and the level-to-level handoff) is
+        // authored here; the family's level order (free edge -> wall) is
+        // untouched
+        {
+            // this level's entries are the tail of the accumulating
+            // keptSrc/keptK arrays (kept is per-level, the tags accumulate)
+            let base = keptSrc.length - kept.length;
+            let cands = kept.map((f, i) => {
+                let flip = f.isOpen() && (f.isClockwise() !== cutdir);
+                return {
+                    f, src: keptSrc[base + i], k: keptK[base + i],
+                    open: f.isOpen(),
+                    // emitted start (where the cut will begin) and exit
+                    st: flip ? f.points[f.points.length - 1] : f.points[0],
+                    en: flip ? f.points[0] : f.points[f.points.length - 1],
+                };
+            });
+            // canonical candidate order: makes the permutation search (and
+            // its tie-breaking) a deterministic function of the fragment
+            // SET, reproducible by the e2e harness from the authored
+            // [FARRJ] export (bin/cam-bench check 10)
+            cands.sort((a, b) => {
+                const ka = candKey(a.f), kb = candKey(b.f);
+                return ka < kb ? -1 : ka > kb ? 1 : 0;
+            });
+            // emitted start of a fragment for a given arrival cursor;
+            // closed rings rotate their start to the point nearest it
+            const startFor = (cd, cur) => cd.open ? cd.st :
+                (cur ? nearestPointOn(cd.f, cur) : cd.en);
+            const walkLevel = (perm, cur) => {
+                let cost = 0;
+                for (let i = 0; i < perm.length; i++) {
+                    const st = startFor(perm[i], cur);
+                    if (cur) {
+                        cost += cur.distTo2D(st);
+                    }
+                    cur = perm[i].open ? perm[i].en : st;
+                }
+                return { cost, end: cur };
+            };
+            let order, solved;
+            // exact search pays off only for a BROKEN contour (>= 2 open
+            // fragments whose junction pairing matters); a level of closed
+            // rings (disconnected material islands) has no junction
+            // structure worth the factorial, route it greedily
+            let openCount = 0;
+            for (const cd of cands) {
+                if (cd.open) openCount++;
+            }
+            if (openCount > 1 && cands.length <= 6) {
+                // exact: every permutation of the level's fragments
+                order = null;
+                let best = Infinity;
+                const idx = cands.map((_, i) => i);
+                const permute = (arr, l) => {
+                    if (l === arr.length) {
+                        const perm = arr.map(i => cands[i]);
+                        const { cost, end } = walkLevel(perm, ringCursor);
+                        if (cost < best - 1e-9) {
+                            best = cost;
+                            order = perm;
+                            solved = end;
+                        }
+                        return;
+                    }
+                    for (let i = l; i < arr.length; i++) {
+                        [arr[l], arr[i]] = [arr[i], arr[l]];
+                        permute(arr, l + 1);
+                        [arr[l], arr[i]] = [arr[i], arr[l]];
+                    }
+                };
+                permute(idx, 0);
+            }
+            if (!order) {
+                // greedy fallback (large levels): nearest emitted start,
+                // then nearest emitted start from each new exit
+                order = [];
+                let left = cands.slice(), cur = ringCursor;
+                while (left.length) {
+                    let bi = 0, bd = Infinity;
+                    for (let i = 0; i < left.length; i++) {
+                        const d = cur ? cur.distTo2D(startFor(left[i], cur)) : 0;
+                        if (d < bd) {
+                            bd = d;
+                            bi = i;
+                        }
+                    }
+                    const cd = left.splice(bi, 1)[0];
+                    order.push(cd);
+                    cur = cd.open ? cd.en : startFor(cd, cur);
+                }
+                solved = cur;
+            }
+            let chain = [], chainSrc = [], chainK = [];
+            for (const cd of order) {
+                chain.push(cd.f);
+                chainSrc.push(cd.src);
+                chainK.push(cd.k);
+            }
+            ringCursor = solved;
+            kept = chain;
+            keptSrc.length = base;
+            keptSrc.appendAll(chainSrc);
+            keptK.length = base;
+            keptK.appendAll(chainK);
         }
         // record the full sweep over material (not just the fresh part):
         // later rings must not re-count material this ring already removes
@@ -2866,6 +3038,9 @@ async function freeAnchorRings(ctx) {
                 // or wall finish piece (W) — lets acceptance verify that the
                 // whole family block precedes the wall finish block
                 w: i < rings.length ? (keptSrc[i] ?? 'M') : 'W',
+                // family level (offset index, task #5f60fe5a): lets acceptance
+                // verify the traversal chaining WITHIN each broken ring level
+                k: i < rings.length ? (keptK[i] ?? -1) : -1,
                 pts: p.points.map(q => [ +q.x.toFixed(2), +q.y.toFixed(2) ])
             }))
         }));
