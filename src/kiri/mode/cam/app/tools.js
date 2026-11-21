@@ -44,6 +44,7 @@ function selectTool(tool) {
         toolShaftLen: selectedTool.shaft_len,
         toolFluteDiam: selectedTool.flute_diam,
         toolFluteLen: selectedTool.flute_len,
+        toolFlutes: selectedTool.flutes ?? 2,
         toolTaperAngle: selectedTool.taper_angle,
         toolTaperTip: selectedTool.taper_tip,
     },{
@@ -55,6 +56,7 @@ function selectTool(tool) {
         toolShaftLen: ui.toolShaftLen,
         toolFluteDiam: ui.toolFluteDiam,
         toolFluteLen: ui.toolFluteLen,
+        toolFlutes: ui.toolFlutes,
         toolTaperAngle: ui.toolTaperAngle,
         toolTaperTip: ui.toolTaperTip,
     });
@@ -85,6 +87,7 @@ export function updateTool(ev) {
         toolShaftLen: selectedTool.shaft_len,
         toolFluteDiam: selectedTool.flute_diam,
         toolFluteLen: selectedTool.flute_len,
+        toolFlutes: selectedTool.flutes ?? 2,
         toolTaperAngle: selectedTool.taper_angle,
         toolTaperTip: selectedTool.taper_tip,
     };
@@ -98,6 +101,7 @@ export function updateTool(ev) {
         toolShaftLen: ui.toolShaftLen,
         toolFluteDiam: ui.toolFluteDiam,
         toolFluteLen: ui.toolFluteLen,
+        toolFlutes: ui.toolFlutes,
         toolTaperAngle: ui.toolTaperAngle,
         toolTaperTip: ui.toolTaperTip,
     });
@@ -110,6 +114,7 @@ export function updateTool(ev) {
     selectedTool.shaft_len = changed.toolShaftLen;
     selectedTool.flute_diam = changed.toolFluteDiam;
     selectedTool.flute_len = changed.toolFluteLen;
+    selectedTool.flutes = changed.toolFlutes;
     selectedTool.taper_angle = changed.toolTaperAngle;
     selectedTool.taper_tip = changed.toolTaperTip;
 
@@ -273,6 +278,7 @@ function _showTools() {
             name: "new tool",
             type: "endmill",
             taper_tip: 0,
+            flutes: 2,
             metric
         }, metric ? {
             shaft_diam: 2,

@@ -97,6 +97,7 @@ export function menu() {
     _____:               newGroup(LANG.td_flut),
     toolFluteDiam:       newInput('diameter', { convert: toFloat }),
     toolFluteLen:        newInput('length', { convert: toFloat }),
+    toolFlutes:          newInput(LANG.td_flts, { convert: toInt }),
     _____:               newGroup(LANG.td_tapr),
     toolTaperAngle:      newInput('angle', { convert: toFloat }),
     toolTaperTip:        newInput('tip', { convert: toFloat }),
