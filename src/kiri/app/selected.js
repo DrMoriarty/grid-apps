@@ -560,6 +560,7 @@ function input_binding(ui) {
         ui.toolNum,        updateTool,
         ui.toolFluteDiam,  updateTool,
         ui.toolFluteLen,   updateTool,
+        ui.toolFlutes,     updateTool,
         ui.toolShaftDiam,  updateTool,
         ui.toolShaftLen,   updateTool,
         ui.toolTaperTip,   updateTool,

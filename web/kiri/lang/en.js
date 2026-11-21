@@ -114,6 +114,7 @@ self.lang['en-us'] = {
     td_tonm:        "tool #",
     td_shft:        "shaft",        // endmill shaft specs
     td_flut:        "flute",        // endmill flute specs
+    td_flts:        "flutes",       // endmill flute count
     td_tapr:        "taper",        // endmill taper specs
 
     // DEVICE dialog groups

@@ -503,6 +503,7 @@ export function init_input() {
         ui.toolNum,
         ui.toolFluteDiam,
         ui.toolFluteLen,
+        ui.toolFlutes,
         ui.toolShaftDiam,
         ui.toolShaftLen,
         ui.toolTaperTip,

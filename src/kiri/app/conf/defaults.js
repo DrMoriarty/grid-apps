@@ -191,6 +191,15 @@ function normalize(settings) {
     fill_cull_many(settings.sproc.LASER, defaults.laser.p);
     fill_cull_once(settings.controller, template.controller);
 
+    // migrate legacy tool records: default to 2 flutes when unset
+    if (Array.isArray(settings.tools)) {
+        for (let tool of settings.tools) {
+            if (tool && tool.flutes === undefined) {
+                tool.flutes = 2;
+            }
+        }
+    }
+
     return settings;
 }
 
@@ -858,6 +867,7 @@ export const conf = {
                 flute_diam: 0.25,
                 flute_len:  2,
                 taper_tip: 0,
+                flutes: 2,
             },
             {
                 id: 1001,
@@ -870,6 +880,7 @@ export const conf = {
                 flute_diam: 0.125,
                 flute_len:  1.5,
                 taper_tip: 0,
+                flutes: 2,
             },
             {
                 id: 1002,
@@ -882,6 +893,7 @@ export const conf = {
                 flute_diam: 0.0625,
                 flute_len:  1.5,
                 taper_tip: 0,
+                flutes: 2,
             },
             {
                 id: 1003,
@@ -895,6 +907,7 @@ export const conf = {
                 flute_len:  1.5,
                 taper_angle: 5.3,
                 taper_tip: 0,
+                flutes: 2,
             },
             {
                 id: 1004,
@@ -907,6 +920,7 @@ export const conf = {
                 flute_diam: 0.125,
                 flute_len:  1.5,
                 taper_tip: 0,
+                flutes: 2,
             },
             {
                 id: 1005,
@@ -919,6 +933,7 @@ export const conf = {
                 flute_diam: 0.125,
                 flute_len:  1.5,
                 taper_tip: 0,
+                flutes: 2,
             },
             {
                 id: 1006,
@@ -931,6 +946,7 @@ export const conf = {
                 flute_diam: 0.25,
                 flute_len:  2,
                 taper_tip: 0,
+                flutes: 2,
             }
         ],
         // currently selected device (current mode)

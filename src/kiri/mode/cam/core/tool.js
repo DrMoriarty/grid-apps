@@ -56,6 +56,12 @@ class Tool {
         return this.unitScale() * this.tool.flute_diam;
     }
 
+    // number of cutting edges (flutes); defaults to 2 for legacy
+    // tool records that pre-date the flutes field
+    flutes() {
+        return this.tool.flutes ?? 2;
+    }
+
     tipDiameter() {
         return this.unitScale() * this.tool.taper_tip;
     }

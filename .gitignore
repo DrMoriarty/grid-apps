@@ -31,3 +31,5 @@ __pycache__
 .drcode/pending_notifications.json
 .drcode/goals/*.state.json
 .drcode/mcp.json
+.drcode/mcp-servers.json
+.drcode/code_index.json
