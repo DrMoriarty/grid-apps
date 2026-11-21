@@ -1,6 +1,7 @@
 /** Copyright Stewart Allen <sa@grid.space> -- All Rights Reserved */
 
 import { api } from '../../../app/api.js';
+import { MATERIALS } from './fscalc.js';
 import { originReset, originSelect } from './cl-origin.js';
 import { updateTool } from './tools.js';
 
@@ -174,6 +175,16 @@ export function menu() {
     camZTop:             newInput(LANG.ou_ztop_s, {title:LANG.ou_ztop_l, convert:toFloat, units, trigger, selector, top }),
     camZBottom:          newInput(LANG.ou_zbot_s, {title:LANG.ou_zbot_l, convert:toFloat, units, trigger, selector, bottom }),
     camZClearance:       newInput(LANG.ou_zclr_s, {title:LANG.ou_zclr_l, convert:toFloat, bound:bound(0.01,100), units }),
+    separator:           newBlank({ class:"set-sep", driven }),
+    // cutting material for the feed/speed advisor (fscalc); stored in
+    // settings.process.camMaterial. "none" = no material chosen
+    camMaterial:         newSelect(LANG.cc_matr_s, {
+                             title: LANG.cc_matr_l,
+                             action: () => api.conf.update()
+                         }, [
+                             { name: LANG.cc_matn_s, id: "none" },
+                             ...Object.entries(MATERIALS).map(([key, m]) => ({ name: m.label, id: key })),
+                         ]),
     separator:           newBlank({ class:"set-sep", driven }),
     camFastFeed:         newInput(LANG.cc_rapd_s, {title:LANG.cc_rapd_l, convert:toFloat, units}),
     camFastFeedZ:        newInput(LANG.cc_rzpd_s, {title:LANG.cc_rzpd_l, convert:toFloat, units}),

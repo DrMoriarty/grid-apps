@@ -2567,3 +2567,33 @@ details[open] summary::after {
 .em20 {
     max-width: 20em;
 }
+
+/* advisory feeds & speeds (cam op popups) */
+.fs-advisory {
+    font-size: 10px;
+    line-height: 1.3;
+    color: #888;
+    padding: 2px 4px 2px 14px;
+    cursor: pointer;
+    user-select: none;
+    white-space: normal;
+}
+.fs-advisory:hover {
+    color: #ccc;
+    background-color: var(--blue-1);
+}
+.fs-fswarn {
+    font-size: 10px;
+    line-height: 1.3;
+    color: #d0a030;
+    padding: 1px 4px 2px 14px;
+    white-space: pre-line;
+}
+.fs-warn {
+    outline: 2px solid #e0b020;
+    outline-offset: -1px;
+}
+.fs-bad {
+    outline: 2px solid #e04040;
+    outline-offset: -1px;
+}

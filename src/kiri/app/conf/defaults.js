@@ -569,6 +569,9 @@ export const conf = {
                 camLevelStepZ: 0,
                 camLevelStock: true,
                 camLevelTool: 1000,
+                // cutting material key for the feed/speed advisor (fscalc,
+                // phase 3 adds the selector UI); empty = no material chosen
+                camMaterial: "",
                 camMillDirection: "climb",
                 camOriginCenter: false,
                 camOriginOffX: 0,

@@ -4,7 +4,7 @@ import { $ } from '../../../../moto/webui.js';
 import { api } from '../../../app/api.js';
 import { animate as anim_2d, animate_clear as anim_2d_clear } from './anim-2d.js';
 import { animate2 as anim_3d, animate_clear2 as anim_3d_clear } from './anim-3d.js';
-import { createPopOps } from './cl-ops.js';
+import { createPopOps, fsAdvisoryCheck } from './cl-ops.js';
 import { helicalOn, helicalDone } from './cl-helical.js';
 import { holeSelOn, selectHolesDone, clearHolesRec } from './cl-hole.js';
 import { load } from '../../../../load/file.js';
@@ -916,6 +916,9 @@ export function init() {
         if (!env.isCamMode) {
             return;
         }
+        // phase 3: global pre-slice feed/speed advisories (read-only,
+        // non-blocking -- shows alerts, never stops the slice)
+        fsAdvisoryCheck();
         clearPops();
         recreateTabs();
         for (let group of Widget.Groups.list()) {
