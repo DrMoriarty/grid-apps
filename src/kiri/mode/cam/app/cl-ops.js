@@ -11,6 +11,7 @@ import { surfaceAdd } from './cl-surface.js';
 import { traceAdd, traceClear, traceLoad } from './cl-trace.js';
 import { startFaceUp } from '../../../app/face-tool.js';
 import { showZBottom, showZTop, updateStock } from './cl-stock.js';
+import { recommend } from './fscalc.js';
 
 const { MODES } = api.const;
 const { uc: UC } = api;
@@ -39,6 +40,279 @@ function zTop() {
 
 function zBottom() {
     return api.conf.get().process.camZBottom > 0;
+}
+
+// ------------------------------------------------------------------
+// advisory feeds & speeds (phase 2 of the cutting velocity estimator)
+//
+// Every CAM operation popup gets a gray advisory line inside its
+// "feeds & speeds" section computed from fscalc.recommend() using the
+// process material (settings.process.camMaterial -- populated by the
+// material selector in phase 3), the op tool and the op spindle.
+// Fields outside the recommended range are outlined (yellow = outside,
+// red = way outside). Clicking the advisory line applies the range
+// midpoints to the fields -- the ONLY place values are ever written,
+// and only on that explicit click.
+// ------------------------------------------------------------------
+
+// per-op advisory field mapping. keys are advisory semantics, values
+// are op.inputs keys: rate = lateral feed, plunge = vertical feed,
+// down = max step-down per pass. ops whose "rate" field is
+// semantically a plunge (drilling) are mapped accordingly.
+const FS_OP_FIELDS = {
+    level:    { rate: 'rate', down: 'stepz' },
+    rough:    { rate: 'rate', plunge: 'plunge', down: 'down' },
+    outline:  { rate: 'rate', plunge: 'plunge', down: 'down' },
+    contour:  { rate: 'rate' },
+    lathe:    { rate: 'rate' },
+    trace:    { rate: 'rate', plunge: 'plunge', down: 'down' },
+    pocket:   { rate: 'rate', plunge: 'plunge', down: 'down' },
+    drill:    { plunge: 'rate', down: 'down' },
+    register: { plunge: 'rate', down: 'down' },
+    helical:  { rate: 'feed', plunge: 'rate', down: 'down' },
+    area:     { rate: 'rate', plunge: 'plunge', down: 'down' },
+};
+
+const FS_CSS_WARN = 'fs-warn';
+const FS_CSS_BAD = 'fs-bad';
+
+// display unit scale: fscalc works in mm, fields may display inches
+function fsIsInch() {
+    return env.current.controller.units === 'in';
+}
+
+// display-unit scale factor from mm
+function fsDispScale() {
+    return fsIsInch() ? 1 / 25.4 : 1;
+}
+
+// format a mm value for display in workspace units
+function fsFmt(v, dec) {
+    if (fsIsInch()) {
+        return (v / 25.4).toFixed(dec ?? 3);
+    }
+    const r = Math.round(v);
+    return (Math.abs(v - r) < 0.005 ? r : v.toFixed(dec ?? 0)).toString();
+}
+
+// read a field's real (mm) value from its input element
+function fsReal(ip) {
+    if (!ip) return 0;
+    if (ip.real !== undefined && ip.real !== null && !isNaN(ip.real)) {
+        return ip.real;
+    }
+    const v = parseFloat(ip.value);
+    return isNaN(v) ? 0 : v * (fsIsInch() ? 25.4 : 1);
+}
+
+// write a mm value into a units-aware input field
+function fsSetVal(op, key, mmVal) {
+    const ip = op.inputs[key];
+    if (!ip || !(mmVal > 0)) return;
+    if (ip.setv) {
+        ip.setv(mmVal);
+    } else {
+        ip.value = Math.round(mmVal);
+    }
+}
+
+// clear highlight + reason tooltip from a field
+function fsClearMark(op, key) {
+    const ip = op.inputs[key];
+    if (!ip) return;
+    ip.classList.remove(FS_CSS_WARN, FS_CSS_BAD);
+    ip.title = '';
+}
+
+// mark a field: level = undefined | 'warn' | 'bad', with a reason
+function fsMark(op, key, level, reason) {
+    const ip = op.inputs[key];
+    if (!ip) return;
+    ip.classList.remove(FS_CSS_WARN, FS_CSS_BAD);
+    if (level) {
+        ip.classList.add(level === 'warn' ? FS_CSS_WARN : FS_CSS_BAD);
+        ip.title = reason || '';
+    }
+}
+
+// mark fields outside [lo,hi] with red escalation per phase 2 spec:
+// rate red when chipload > 2x upper bound or < 1/2 lower bound,
+// plunge red when above recommendation, down red when over max DOC
+function fsRangeMark(op, key, v, lo, hi, why) {
+    if (!key || !(v > 0) || !(hi > 0)) {
+        fsClearMark(op, key);
+        return;
+    }
+    if (v > 2 * hi) {
+        fsMark(op, key, 'bad', `${why}: way above range -- high risk of tool breakage`);
+    } else if (v < lo / 2) {
+        fsMark(op, key, 'bad', `${why}: way below range -- rubbing, heat buildup, chip welding / material melting`);
+    } else if (v > hi) {
+        fsMark(op, key, 'warn', `${why}: above recommended range -- shorter tool life`);
+    } else if (v < lo) {
+        fsMark(op, key, 'warn', `${why}: below recommended range -- heat buildup, poor finish`);
+    } else {
+        fsClearMark(op, key);
+    }
+}
+
+// compute recommendation for an op record, or null when it cannot be
+// computed (no material chosen, no tool, spindle speed unknown)
+function fsCalcRec(op) {
+    const settings = env.current;
+    const rec = op.rec;
+    if (!rec) return null;
+    const material = settings.process.camMaterial;
+    const tool = new Tool(settings, rec.tool);
+    const spindle = parseInt(op.inputs.spindle?.value) || rec.spindle || 0;
+    if (!material || !(spindle > 0) || !(tool.tool.flute_diam > 0)) {
+        return null;
+    }
+    // always compute in mm; fsReal/fsSetVal work in real (mm) values
+    return recommend(material, tool, spindle, { units: 'mm' });
+}
+
+// create the advisory row + warnings row inside the op popup, wired
+// to recalc on tool/spindle/rate/plunge/down changes and on popup open
+function fsSetupAdvisory(op, fields) {
+    const anchorKey = fields.plunge || fields.rate;
+    const anchor = op.inputs[anchorKey];
+    if (!anchor) return;
+    const anchorRow = anchor.parentElement;
+    if (!anchorRow || !anchorRow.parentElement) return;
+
+    const warnRow = document.createElement('div');
+    warnRow.setAttribute('class', 'fs-fswarn');
+    warnRow.style.display = 'none';
+
+    const advRow = document.createElement('div');
+    advRow.setAttribute('class', 'fs-advisory');
+    advRow.setAttribute('title', 'click to apply recommended values');
+    advRow.onclick = () => {
+        const rec = fsCalcRec(op);
+        if (!rec || rec.vfHi <= 0) return;
+        if (fields.rate) {
+            fsSetVal(op, fields.rate, (rec.vfLo + rec.vfHi) / 2);
+        }
+        if (fields.plunge) {
+            fsSetVal(op, fields.plunge, (rec.plungeLo + rec.plungeHi) / 2);
+        }
+        if (fields.down) {
+            fsSetVal(op, fields.down, (rec.maxDocRange[0] + rec.maxDocRange[1]) / 2);
+        }
+        fsUpdateAdvisory(op, fields);
+        op.bind();
+    };
+
+    anchorRow.after(warnRow);
+    anchorRow.after(advRow);
+
+    const trackKeys = [fields.rate, fields.plunge, fields.down, 'spindle']
+        .filter(k => k && op.inputs[k]);
+    for (const key of trackKeys) {
+        op.inputs[key].addEventListener('blur', () => fsUpdateAdvisory(op, fields));
+    }
+    // tool changes: run after the stock onchange handler (which binds)
+    const toolSel = op.inputs.tool;
+    if (toolSel) {
+        const prevChange = toolSel.onchange;
+        toolSel.onchange = ev => {
+            prevChange?.(ev);
+            fsUpdateAdvisory(op, fields);
+        };
+    }
+    // popup open: rec2ui + hideshow have run, rec is current
+    const prevUse = op.use;
+    op.use = rec => {
+        prevUse(rec);
+        fsUpdateAdvisory(op, fields);
+    };
+}
+
+// recompute advisory line, warnings and field highlighting for an op
+function fsUpdateAdvisory(op, fields) {
+    const warnRow = op.div.querySelector('.fs-fswarn');
+    const advRow = op.div.querySelector('.fs-advisory');
+    if (!advRow || !warnRow) return;
+
+    const rec = fsCalcRec(op);
+    const unitName = fsIsInch() ? 'in' : 'mm';
+
+    for (const key of [fields.rate, fields.plunge, fields.down]) {
+        fsClearMark(op, key);
+    }
+
+    // spindle over device maximum (independent of material/tool)
+    const devMax = env.current.device.spindleMax;
+    const spindle = parseInt(op.inputs.spindle?.value) || 0;
+    if (devMax > 0 && spindle > devMax) {
+        fsMark(op, 'spindle', 'bad',
+            `spindle speed ${spindle} exceeds device maximum ${devMax} -- risk of machine/tool damage`);
+    } else {
+        fsClearMark(op, 'spindle');
+    }
+
+    if (!rec) {
+        const settings = env.current;
+        const material = settings.process.camMaterial;
+        advRow.innerText = !material
+            ? `advisory: no material selected -- pick one to see feed recommendations`
+            : `advisory: set tool & spindle speed to see feed recommendations`;
+        advRow.style.opacity = '0.6';
+        warnRow.style.display = 'none';
+        return;
+    }
+
+    advRow.style.opacity = '1';
+    advRow.innerText = 'recommended: ' +
+        `feed ${fsFmt(rec.vfLo)}-${fsFmt(rec.vfHi)} ${unitName}` +
+        (fields.plunge ? `, plunge ${fsFmt(rec.plungeLo)}-${fsFmt(rec.plungeHi)} ${unitName}` : '') +
+        (fields.down ? `, max DOC ${fsFmt(rec.maxDoc, 2)} ${unitName}` : '');
+
+    // lateral feed
+    if (fields.rate) {
+        fsRangeMark(op, fields.rate, fsReal(op.inputs[fields.rate]),
+            rec.vfLo, rec.vfHi, 'feed');
+    }
+    // plunge: red above recommendation, yellow below range
+    if (fields.plunge) {
+        const v = fsReal(op.inputs[fields.plunge]);
+        if (v > rec.plungeHi && rec.plungeHi > 0) {
+            fsMark(op, fields.plunge, 'bad',
+                'plunge above recommended range -- high risk of tool breakage');
+        } else {
+            fsRangeMark(op, fields.plunge, v,
+                rec.plungeLo, rec.plungeHi, 'plunge');
+        }
+    }
+    // step-down: red above max DOC
+    if (fields.down) {
+        const v = fsReal(op.inputs[fields.down]);
+        if (v > rec.maxDoc && rec.maxDoc > 0) {
+            fsMark(op, fields.down, 'bad',
+                `step down above max ${fsFmt(rec.maxDoc, 2)} ${fsIsInch() ? 'in' : 'mm'} per pass -- high risk of tool breakage`);
+        } else {
+            fsClearMark(op, fields.down);
+        }
+    }
+
+    // fscalc advisory warnings (material + tool notes)
+    const warnings = rec.warnings || [];
+    warnRow.innerText = warnings.join('\n');
+    warnRow.style.display = warnings.length ? 'block' : 'none';
+    advRow.setAttribute('title', warnings.length
+        ? warnings.join('\n') + '\nclick to apply recommended values'
+        : 'click to apply recommended values');
+}
+
+// wire advisory UI into every popOp with a field mapping
+function fsInitAdvisories() {
+    for (const [type, fields] of Object.entries(FS_OP_FIELDS)) {
+        const op = env.popOp[type];
+        if (op?.inputs) {
+            fsSetupAdvisory(op, fields);
+        }
+    }
 }
 
 // create custom gcode editor function
@@ -846,5 +1120,8 @@ export function createPopOps() {
         ov_botz: UC.newInput(LANG.ou_zbot_s, ov_botz),
         exp_end: UC.endExpand(),
     };
+
+    // advisory feeds & speeds rows (phase 2)
+    fsInitAdvisories();
 
 }
