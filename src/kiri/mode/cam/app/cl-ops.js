@@ -11,7 +11,7 @@ import { surfaceAdd } from './cl-surface.js';
 import { traceAdd, traceClear, traceLoad } from './cl-trace.js';
 import { startFaceUp } from '../../../app/face-tool.js';
 import { showZBottom, showZTop, updateStock } from './cl-stock.js';
-import { recommend } from './fscalc.js';
+import { lookupMaterial, recommend } from './fscalc.js';
 
 const { MODES } = api.const;
 const { uc: UC } = api;
@@ -165,7 +165,7 @@ function fsCalcRec(op) {
     const material = settings.process.camMaterial;
     const tool = new Tool(settings, rec.tool);
     const spindle = parseInt(op.inputs.spindle?.value) || rec.spindle || 0;
-    if (!material || !(spindle > 0) || !(tool.tool.flute_diam > 0)) {
+    if (!material || material === 'none' || !(spindle > 0) || !(tool.tool.flute_diam > 0)) {
         return null;
     }
     // always compute in mm; fsReal/fsSetVal work in real (mm) values
@@ -255,7 +255,7 @@ function fsUpdateAdvisory(op, fields) {
     if (!rec) {
         const settings = env.current;
         const material = settings.process.camMaterial;
-        advRow.innerText = !material
+        advRow.innerText = (!material || material === 'none')
             ? `advisory: no material selected -- pick one to see feed recommendations`
             : `advisory: set tool & spindle speed to see feed recommendations`;
         advRow.style.opacity = '0.6';
@@ -312,6 +312,113 @@ function fsInitAdvisories() {
         if (op?.inputs) {
             fsSetupAdvisory(op, fields);
         }
+    }
+}
+
+// ------------------------------------------------------------------
+// global pre-slice advisory check (phase 3 of the cutting velocity
+// estimator). Second line of defense: catches a user who never opened
+// any operation dialog. Runs on the UI side at slice start (before
+// any worker task is launched), is strictly read-only and purely
+// advisory -- slicing is never blocked. Aggregated issues are shown
+// via api.alerts.show (display already capped at 5 toasts).
+// ------------------------------------------------------------------
+
+export function fsAdvisoryCheck() {
+    const settings = conf.get();
+    const ops = (settings.process.ops || []).filter(op => op && !op.disabled);
+    if (ops.length === 0) {
+        return;
+    }
+    const inch = fsIsInch();
+    const unit = inch ? 'in' : 'mm';
+    const toMm = v => inch ? v * 25.4 : v;
+    const matKey = settings.process.camMaterial;
+    const mat = (matKey && matKey !== 'none') ? lookupMaterial(matKey) : undefined;
+    const devMax = settings.device.spindleMax || 0;
+    const issues = [];
+
+    if (matKey && matKey !== 'none' && !mat) {
+        issues.push(`unknown cutting material "${matKey}" -- select one in settings > limits`);
+    } else if (!mat) {
+        issues.push('no cutting material selected -- feed/speed checks skipped (settings > limits)');
+    }
+
+    for (const op of ops) {
+        const fields = FS_OP_FIELDS[op.type];
+        if (!fields) {
+            continue;
+        }
+        const spindle = op.spindle || 0;
+
+        // spindle checks are material-independent
+        if (devMax > 0 && spindle > devMax) {
+            issues.push(`${op.type}: spindle ${spindle} rpm exceeds device maximum ${devMax} rpm`);
+        }
+        if (devMax > 0 && !(spindle > 0)) {
+            issues.push(`${op.type}: spindle speed is not set`);
+        }
+
+        // stepover is a fraction of tool diameter, material-independent
+        const tool = new Tool(settings, op.tool);
+        const diamMm = tool.fluteDiameter();
+        if (diamMm > 0 && op.over > 0) {
+            if (op.over > 1) {
+                issues.push(`${op.type}: stepover ${op.over} exceeds tool diameter (use 1 or less)`);
+            } else if (op.over < 0.05) {
+                issues.push(`${op.type}: stepover ${op.over} is below 5% of tool diameter`);
+            }
+        }
+
+        // feed/plunge/stepdown checks need a material + valid spindle
+        if (!mat || !(spindle > 0)) {
+            continue;
+        }
+        const rec = recommend(matKey, tool, spindle, { units: 'mm' });
+        const flutes = tool.flutes();
+        const matLabel = mat.label;
+
+        // lateral feed -> chipload (feed / (rpm x flutes)) vs fz range
+        if (fields.rate && rec.fzHi > 0) {
+            const rate = op[fields.rate] || 0;
+            const rateMm = toMm(rate);
+            if (rateMm > 0) {
+                const fz = rateMm / (spindle * flutes);
+                if (fz > rec.fzHi) {
+                    issues.push(`${op.type}: feed ${rate} ${unit} at fz ${fz.toFixed(3)} mm/tooth ` +
+                        `above range for ${matLabel} (recommended ${rec.fzLo.toFixed(3)}-${rec.fzHi.toFixed(3)})`);
+                } else if (fz < rec.fzLo) {
+                    issues.push(`${op.type}: feed ${rate} ${unit} at fz ${fz.toFixed(3)} mm/tooth ` +
+                        `below range for ${matLabel} (recommended ${rec.fzLo.toFixed(3)}-${rec.fzHi.toFixed(3)})`);
+                }
+            }
+        }
+
+        // plunge above recommendation
+        if (fields.plunge && rec.plungeHi > 0) {
+            const plunge = op[fields.plunge] || 0;
+            if (toMm(plunge) > rec.plungeHi) {
+                issues.push(`${op.type}: plunge ${plunge} ${unit} above recommended ` +
+                    `${fsFmt(rec.plungeHi)} ${unit}`);
+            }
+        }
+
+        // stepdown above max depth of cut
+        if (fields.down && rec.maxDoc > 0) {
+            const down = op[fields.down] || 0;
+            if (toMm(down) > rec.maxDoc) {
+                issues.push(`${op.type}: stepdown ${down} ${unit} above max depth of cut ` +
+                    `${fsFmt(rec.maxDoc, 2)} ${unit} per pass`);
+            }
+        }
+    }
+
+    // show aggregated advisories (alerts display is capped at 5)
+    for (const msg of issues.slice(0, 5)) {
+        alerts.show(msg, 8);
+    }
+    if (issues.length > 5) {
+        alerts.show(`${issues.length - 5} more feed/speed advisories -- check operation settings`, 8);
     }
 }
 

@@ -535,6 +535,9 @@ self.lang['en-us'] = {
     cc_sngl_l:      ["select only single edges","instead of connected polylines"],
     cc_sele_s:      "select",
     cc_sele_l:      ["select lines for follow","select loops for clear","select surface for pocket"],
+    cc_matr_s:      "cut material",
+    cc_matr_l:      ["workpiece material used by the feed/speed advisor","recommendations are advisory only and are never applied automatically"],
+    cc_matn_s:      "none",
 
     // CNC COMMON
     cc_menu:        "limits",
