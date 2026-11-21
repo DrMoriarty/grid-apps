@@ -11,7 +11,21 @@ const fs = require('fs');
 const uglify = require('uglify-js');
 const moment = require('moment');
 const agent = require('express-useragent');
-const license = require_fresh('./src/moto/license.js');
+// license.js is ESM (imported natively by the browser); require(esm)
+// only works on Node >= 22, so on older Node parse the terms out of
+// the module source instead
+const license = (() => {
+    try {
+        return require_fresh('./src/moto/license.js');
+    } catch (e) {
+        const src = fs.readFileSync(require('path').join(__dirname, 'src/moto/license.js'), 'utf8');
+        const terms = {};
+        for (const m of src.matchAll(/(\w+)\s*:\s*"([^"]*)"/g)) {
+            terms[m[1]] = m[2];
+        }
+        return { beta: 0, license: terms, version: terms.VERSION };
+    }
+})();
 const version = license.version || "rogue";
 const netdb = require('@gridspace/net-level-client');
 const PATH = require('path');
